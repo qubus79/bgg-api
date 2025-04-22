@@ -5,6 +5,7 @@ from app.scraper_bgg import fetch_bgg_collection
 from app.utils import log_info, log_success
 from app.database import engine
 from app.models import Base
+import asyncio
 
 USERNAME = "qubus"
 
@@ -17,21 +18,35 @@ async def update_bgg_collection() -> dict:
     await init_bgg_db()
 
     log_info("Rozpoczynam pobieranie danych z BGG kolekcji...")
-    inserted, updated = 0, 0
+    games = await fetch_bgg_collection(USERNAME)
+    log_info(f"Pobrano {len(games)} gier z kolekcji")
 
     async with AsyncSessionLocal() as session:
-        # fetch_bgg_collection teraz sam iteruje po game_id i zapisuje dane
-        result = await session.execute(select(BGGGame.game_id))
-        existing_ids = {row[0] for row in result.all()}
+        existing = await session.execute(select(BGGGame.bgg_id))
+        existing_map = {g: True for g in existing.scalars().all()}
 
-        changes = await fetch_bgg_collection(USERNAME, session, existing_ids)
-        inserted += changes["inserted"]
-        updated += changes["updated"]
+        inserted, updated = 0, 0
 
-        await session.commit()
+        for game in games:
+            bgg_id = game.get("bgg_id")
+            if not bgg_id:
+                continue
+
+            if bgg_id in existing_map:
+                await session.execute(
+                    select(BGGGame).filter(BGGGame.bgg_id == bgg_id).execution_options(synchronize_session="fetch")
+                )
+                await session.merge(BGGGame(**game))
+                updated += 1
+            else:
+                session.add(BGGGame(**game))
+                inserted += 1
+
+            await session.commit()
+            await asyncio.sleep(5.5)  # zachowanie limitu BGG
 
     log_success(f"Zaktualizowano kolekcję: {inserted} nowych, {updated} zaktualizowanych")
-    return {"inserted": inserted, "updated": updated, "total": inserted + updated}
+    return {"inserted": inserted, "updated": updated, "total": len(games)}
 
 
 async def get_bgg_collection() -> list:
