@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import BGGGame
-from app.scraper_bgg import fetch_bgg_collection_with_details
+from app.scraper_bgg import fetch_bgg_collection
 from app.utils import log_info, log_success
 
 
