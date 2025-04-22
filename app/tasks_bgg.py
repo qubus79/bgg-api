@@ -6,10 +6,11 @@ from app.models import BGGGame
 from app.scraper_bgg import fetch_bgg_collection
 from app.utils import log_info, log_success
 
+USERNAME = "qubus"
 
 async def update_bgg_collection() -> dict:
     log_info("Pobieranie rozszerzonej kolekcji BGG...")
-    games = await fetch_bgg_collection(qubus)
+    games = await fetch_bgg_collection(USERNAME)
     log_info(f"Pobrano {len(games)} gier z kolekcji")
 
     async with AsyncSessionLocal() as session:
