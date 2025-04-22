@@ -1,0 +1,12 @@
+# requirements.txt
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+asyncpg
+httpx
+beautifulsoup4
+apscheduler
+pydantic-settings
+python-dotenv
+colorama
+
