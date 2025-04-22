@@ -12,12 +12,26 @@ def extract_text(element: ET.Element) -> str:
     return element.text.strip() if element is not None and element.text else ""
 
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
-    resp = await client.get(url)
-    while resp.status_code == 202:
-        await asyncio.sleep(2)
+    retries = 5
+    backoff = 2
+
+    for attempt in range(retries):
         resp = await client.get(url)
-    resp.raise_for_status()
-    return ET.fromstring(resp.text)
+
+        if resp.status_code == 202:
+            await asyncio.sleep(2)
+            continue
+
+        if resp.status_code == 429:
+            wait = backoff * (attempt + 1)
+            print(f"⚠️  Got 429 Too Many Requests. Waiting {wait} seconds before retrying...")
+            await asyncio.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        return ET.fromstring(resp.text)
+
+    raise httpx.HTTPStatusError("Too many retries", request=resp.request, response=resp)
 
 async def fetch_bgg_collection(username: str) -> List[dict]:
     url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&stats=1"
