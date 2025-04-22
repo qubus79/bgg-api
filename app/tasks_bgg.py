@@ -5,8 +5,14 @@ from app.database import AsyncSessionLocal
 from app.models import BGGGame
 from app.scraper_bgg import fetch_bgg_collection
 from app.utils import log_info, log_success
+from app.database import engine
+from app.models import Base
 
 USERNAME = "qubus"
+
+async def init_bgg_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 async def update_bgg_collection() -> dict:
     log_info("Pobieranie rozszerzonej kolekcji BGG...")

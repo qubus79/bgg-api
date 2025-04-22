@@ -4,6 +4,10 @@ from app import tasks_bgg
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def on_startup():
+    await tasks_bgg.init_bgg_db()
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
