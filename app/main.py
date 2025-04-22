@@ -1,6 +1,7 @@
 # app/main.py
 from fastapi import FastAPI, HTTPException, Path
 from app import tasks
+from app import tasks_bgg
 from app.schemas import InterestLevelUpdate
 
 app = FastAPI()
