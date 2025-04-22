@@ -42,6 +42,7 @@ async def fetch_bgg_collection(username: str) -> List[dict]:
             statuses = status_el.attrib if status_el is not None else {}
 
             detail_url = detail_base.format(game_id=game_id)
+            await asyncio.sleep(1)  # 🧠 DODAJ TO!
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
 
