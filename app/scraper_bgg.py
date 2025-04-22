@@ -87,7 +87,7 @@ async def fetch_bgg_collection(username: str) -> List[Dict[str, Any]]:
             status = parse_status(item.find("status"))
 
             detail_url = detail_base.format(game_id=game_id)
-            await asyncio.sleep(random.uniform(1.1, 2.0))
+            await asyncio.sleep(random.uniform(5.0, 6.5))
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
 
