@@ -1,123 +1,136 @@
-# app/scraper_bgg.py
-
 import httpx
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any
 import asyncio
+import logging
 
-def parse_xml_element(element: ET.Element) -> Dict[str, Any]:
-    return {k: v for k, v in element.attrib.items()}
+logger = logging.getLogger(__name__)
 
-def extract_text(element: ET.Element) -> str:
-    return element.text.strip() if element is not None and element.text else ""
 
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
-    retries = 5
-    backoff = 2
+    for attempt in range(5):
+        try:
+            resp = await client.get(url)
+            while resp.status_code == 202:
+                await asyncio.sleep(2)
+                resp = await client.get(url)
+            resp.raise_for_status()
+            return ET.fromstring(resp.text)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                logger.warning(f"Got 429 Too Many Requests. Retrying after delay...")
+                await asyncio.sleep(3)
+            else:
+                raise e
+    raise Exception(f"Failed to fetch XML after retries: {url}")
 
-    for attempt in range(retries):
-        resp = await client.get(url)
 
-        if resp.status_code == 202:
-            await asyncio.sleep(2)
-            continue
+def parse_status(element: ET.Element) -> Dict[str, Any]:
+    attrs = element.attrib
+    return {
+        "own": attrs.get("own") == "1",
+        "prevowned": attrs.get("prevowned") == "1",
+        "preordered": attrs.get("preordered") == "1",
+        "want": attrs.get("want") == "1",
+        "wanttoplay": attrs.get("wanttoplay") == "1",
+        "wanttobuy": attrs.get("wanttobuy") == "1",
+        "wishlist": attrs.get("wishlist") == "1",
+        "fortrade": attrs.get("fortrade") == "1",
+        "wishlist_priority": int(attrs.get("wishlistpriority", 0))
+    }
 
-        if resp.status_code == 429:
-            wait = backoff * (attempt + 1)
-            print(f"⚠️  Got 429 Too Many Requests. Waiting {wait} seconds before retrying...")
-            await asyncio.sleep(wait)
-            continue
 
-        resp.raise_for_status()
-        return ET.fromstring(resp.text)
+def parse_int(value: str | None) -> int | None:
+    return int(value) if value and value.isdigit() else None
 
-    raise httpx.HTTPStatusError("Too many retries", request=resp.request, response=resp)
 
-async def fetch_bgg_collection(username: str) -> List[dict]:
+def parse_float(value: str | None) -> float | None:
+    try:
+        return float(value) if value and value != "N/A" else None
+    except ValueError:
+        return None
+
+
+def get_detail_field(item: ET.Element, path: str, attr: str = "value") -> str | None:
+    node = item.find(path)
+    return node.attrib.get(attr) if node is not None and attr in node.attrib else None
+
+
+def get_rank_value(ranks: ET.Element) -> int | None:
+    for rank in ranks.findall("rank"):
+        if rank.attrib.get("friendlyname") == "Board Game Rank" and rank.attrib.get("value", "") != "Not Ranked":
+            return parse_int(rank.attrib.get("value"))
+    return None
+
+
+def extract_links(detail_item: ET.Element, link_type: str) -> List[str]:
+    return [link.attrib.get("value") for link in detail_item.findall("link") if link.attrib.get("type") == link_type]
+
+
+async def fetch_bgg_collection(username: str) -> List[Dict[str, Any]]:
     url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&stats=1"
     detail_base = "https://boardgamegeek.com/xmlapi2/thing?id={game_id}&stats=1"
 
+    games = []
     async with httpx.AsyncClient() as client:
-        print(f"➡️ Fetching BGG collection for user: {username}...")
+        logger.info(f"➡️ Fetching BGG collection for user: {username}...")
         collection_root = await fetch_xml(client, url)
-
-        items = collection_root.findall("item")
-        games = []
-
-        for item in items:
+        for item in collection_root.findall("item"):
             game_id = int(item.attrib["objectid"])
-            name = item.find("name").text if item.find("name") is not None else None
-            year_published = item.findtext("yearpublished")
+            name = item.findtext("name")
+            year_published = parse_int(item.findtext("yearpublished"))
             image = item.findtext("image")
             thumbnail = item.findtext("thumbnail")
-            num_plays = item.findtext("numplays")
+            num_plays = parse_int(item.findtext("numplays")) or 0
 
-            status_el = item.find("status")
-            statuses = status_el.attrib if status_el is not None else {}
+            status = parse_status(item.find("status"))
 
             detail_url = detail_base.format(game_id=game_id)
-            await asyncio.sleep(1)  # 🧠 DODAJ TO!
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
 
-            stats_el = detail_item.find("statistics/rating") if detail_item is not None else None
-            avg_rating = stats_el.find("average").attrib.get("value") if stats_el is not None else None
-            my_rating = stats_el.attrib.get("value") if stats_el is not None else None
-            ranks = stats_el.find("ranks") if stats_el is not None else None
-            bgg_rank = None
-            if ranks is not None:
-                for rank in ranks.findall("rank"):
-                    if rank.attrib.get("friendlyname") == "Board Game Rank":
-                        bgg_rank = rank.attrib.get("value")
-                        break
+            if detail_item is None:
+                logger.warning(f"No details found for game {game_id}")
+                continue
 
-            min_players = detail_item.attrib.get("minplayers") if detail_item is not None else None
-            max_players = detail_item.attrib.get("maxplayers") if detail_item is not None else None
-            min_playtime = detail_item.attrib.get("minplaytime") if detail_item is not None else None
-            max_playtime = detail_item.attrib.get("maxplaytime") if detail_item is not None else None
-            playtime = detail_item.attrib.get("playingtime") if detail_item is not None else None
-            min_age = detail_item.attrib.get("minage") if detail_item is not None else None
+            stats = detail_item.find("statistics/rating")
+            my_rating = parse_float(stats.attrib.get("value")) if stats is not None else None
+            avg_rating = parse_float(get_detail_field(stats, "average")) if stats is not None else None
+            bgg_rank = get_rank_value(stats.find("ranks")) if stats is not None else None
+
+            min_players = parse_int(detail_item.attrib.get("minplayers"))
+            max_players = parse_int(detail_item.attrib.get("maxplayers"))
+            min_playtime = parse_int(detail_item.attrib.get("minplaytime"))
+            max_playtime = parse_int(detail_item.attrib.get("maxplaytime"))
+            play_time = parse_int(detail_item.attrib.get("playingtime"))
+            min_age = parse_int(detail_item.attrib.get("minage"))
 
             description = detail_item.findtext("description")
-            original_name = None
-            for name_el in detail_item.findall("name"):
-                if name_el.attrib.get("type") == "primary":
-                    original_name = name_el.attrib.get("value")
+            original_name = next((n.attrib.get("value") for n in detail_item.findall("name") if n.attrib.get("type") == "primary"), None)
 
-            links = detail_item.findall("link")
-            mechanics = [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamemechanic"]
-            designers = [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamedesigner"]
-            artists = [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgameartist"]
+            mechanics = extract_links(detail_item, "boardgamemechanic")
+            designers = extract_links(detail_item, "boardgamedesigner")
+            artists = extract_links(detail_item, "boardgameartist")
 
             games.append({
                 "game_id": game_id,
                 "name": name,
                 "original_name": original_name,
-                "year_published": int(year_published) if year_published and year_published.isdigit() else None,
+                "year_published": year_published,
                 "image": image,
                 "thumbnail": thumbnail,
-                "num_plays": int(num_plays) if num_plays and num_plays.isdigit() else 0,
-                "status": {
-                    "own": statuses.get("own") == "1",
-                    "prevowned": statuses.get("prevowned") == "1",
-                    "preordered": statuses.get("preordered") == "1",
-                    "want": statuses.get("want") == "1",
-                    "wanttoplay": statuses.get("wanttoplay") == "1",
-                    "wanttobuy": statuses.get("wanttobuy") == "1",
-                    "wishlist": statuses.get("wishlist") == "1",
-                    "fortrade": statuses.get("fortrade") == "1",
-                    "wishlist_priority": int(statuses.get("wishlistpriority")) if statuses.get("wishlistpriority") and statuses.get("wishlistpriority").isdigit() else None
-                },
+                "num_plays": num_plays,
+                "status": status,
                 "stats": {
-                    "my_rating": float(my_rating) if my_rating and my_rating != "N/A" else None,
-                    "average_rating": float(avg_rating) if avg_rating and avg_rating != "N/A" else None,
-                    "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
-                    "min_players": int(min_players) if min_players and min_players.isdigit() else None,
-                    "max_players": int(max_players) if max_players and max_players.isdigit() else None,
-                    "min_playtime": int(min_playtime) if min_playtime and min_playtime.isdigit() else None,
-                    "max_playtime": int(max_playtime) if max_playtime and max_playtime.isdigit() else None,
-                    "play_time": int(playtime) if playtime and playtime.isdigit() else None,
-                    "min_age": int(min_age) if min_age and min_age.isdigit() else None
+                    "my_rating": my_rating,
+                    "average_rating": avg_rating,
+                    "bgg_rank": bgg_rank,
+                    "min_players": min_players,
+                    "max_players": max_players,
+                    "min_playtime": min_playtime,
+                    "max_playtime": max_playtime,
+                    "play_time": play_time,
+                    "min_age": min_age
                 },
                 "description": description,
                 "mechanics": mechanics,
@@ -125,5 +138,7 @@ async def fetch_bgg_collection(username: str) -> List[dict]:
                 "artists": artists
             })
 
-        print(f"✅ Parsed {len(games)} games with details")
-        return games
+            await asyncio.sleep(0.5)  # ⚠️ Sleep to avoid 429s
+
+    logger.info(f"✅ Parsed {len(games)} games from BGG")
+    return games

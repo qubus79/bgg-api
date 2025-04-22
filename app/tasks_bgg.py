@@ -41,6 +41,7 @@ async def update_bgg_collection() -> dict:
                 inserted += 1
 
         await session.commit()
+        await asyncio.sleep(0.3)  # delikatne throttling między grami
 
     log_success(f"Zaktualizowano kolekcję: {inserted} nowych, {updated} zaktualizowanych")
     return {"inserted": inserted, "updated": updated, "total": len(games)}
