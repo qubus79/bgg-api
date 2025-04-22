@@ -75,7 +75,7 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
 async def fetch_bgg_collection(username: str) -> None:
     log_info("📥 Rozpoczynam pobieranie kolekcji BGG")
     collection_url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&stats=1"
-    thing_url = "https://boardgamegeek.com/xmlapi2/thing?id={game_id}&stats=1"
+    thing_url = "https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1"
 
     async with httpx.AsyncClient() as client:
         collection_root = await fetch_xml(client, collection_url)
@@ -83,35 +83,35 @@ async def fetch_bgg_collection(username: str) -> None:
 
         log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
 
-        for idx, (game_id, item) in enumerate(collection_data.items(), start=1):
-            log_info(f"\n[{idx}/{len(collection_data)}] 🧩 Przetwarzam grę ID={game_id}...")
+        for idx, (bgg_id, item) in enumerate(collection_data.items(), start=1):
+            log_info(f"\n[{idx}/{len(collection_data)}] 🧩 Przetwarzam grę ID={bgg_id}...")
 
             basic_data = extract_collection_basics(item)
-            detail_url = thing_url.format(game_id=game_id)
+            detail_url = thing_url.format(bgg_id=bgg_id)
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
             if not detail_item:
-                log_info(f"⚠️ Pominięto grę {game_id} - brak danych szczegółowych")
+                log_info(f"⚠️ Pominięto grę {bgg_id} - brak danych szczegółowych")
                 continue
 
             detailed_data = extract_details(detail_item)
             full_data = {
-                "game_id": int(game_id),
+                "bgg_id": int(bgg_id),
                 **basic_data,
                 **detailed_data,
             }
 
             async with AsyncSessionLocal() as session:
-                result = await session.execute(select(BGGGame).where(BGGGame.game_id == int(game_id)))
+                result = await session.execute(select(BGGGame).where(BGGGame.bgg_id == int(bgg_id)))
                 existing = result.scalars().first()
 
                 if existing:
                     for field, value in full_data.items():
                         setattr(existing, field, value)
-                    log_info(f"♻️ Zaktualizowano dane gry ID={game_id}")
+                    log_info(f"♻️ Zaktualizowano dane gry ID={bgg_id}")
                 else:
                     session.add(BGGGame(**full_data))
-                    log_info(f"➕ Dodano nową grę ID={game_id}")
+                    log_info(f"➕ Dodano nową grę ID={bgg_id}")
 
                 await session.commit()
 
