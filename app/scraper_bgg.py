@@ -23,7 +23,8 @@ async def fetch_bgg_collection(username: str) -> List[dict]:
         subtype = item.attrib.get("subtype")
 
         name = item.findtext("name")
-        year_published = item.findtext("yearpublished")
+        year_published_raw = item.findtext("yearpublished")
+        year_published = int(year_published_raw) if year_published_raw and year_published_raw.isdigit() else None
         image = item.findtext("image")
         thumbnail = item.findtext("thumbnail")
 
