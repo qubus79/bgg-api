@@ -1,5 +1,4 @@
 # app/database.py
-
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -9,7 +8,7 @@ Base = declarative_base()
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=True,  # możesz zmienić na False jak nie chcesz logów SQL
+    echo=True,
     future=True,
 )
 

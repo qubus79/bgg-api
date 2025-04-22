@@ -1,11 +1,8 @@
 # app/scraper_bgg.py
-
 import httpx
 import xml.etree.ElementTree as ET
 from typing import List
-from app.config import settings
 import asyncio
-
 
 async def fetch_bgg_collection(username: str) -> List[dict]:
     url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&stats=1"
