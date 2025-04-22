@@ -1,12 +1,11 @@
 # requirements.txt
 fastapi
 uvicorn[standard]
-sqlalchemy[asyncio]
-asyncpg
 httpx
-beautifulsoup4
+sqlalchemy>=2.0
+asyncpg
 apscheduler
-pydantic-settings
+beautifulsoup4
+lxml
 python-dotenv
 colorama
-
