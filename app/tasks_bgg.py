@@ -9,7 +9,7 @@ from app.utils import log_info, log_success
 
 async def update_bgg_collection() -> dict:
     log_info("Pobieranie rozszerzonej kolekcji BGG...")
-    games = await fetch_bgg_collection_with_details()
+    games = await fetch_bgg_collection(qubus)
     log_info(f"Pobrano {len(games)} gier z kolekcji")
 
     async with AsyncSessionLocal() as session:
