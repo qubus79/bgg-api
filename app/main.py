@@ -42,9 +42,9 @@ async def update_interest_level(game_id: int = Path(..., description="Stable gam
 
 @app.post("/update_bgg_collection")
 async def update_bgg():
-    return await tasks.update_bgg_collection()
+    return await tasks_bgg.update_bgg_collection()
 
 
 @app.get("/bgg_collection")
 async def get_bgg():
-    return await tasks.get_bgg_collection()
+    return await tasks_bgg.get_bgg_collection()
