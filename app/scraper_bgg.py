@@ -26,12 +26,19 @@ def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
 
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
     return {
-        "name": item.findtext("name"),
+        "title": item.findtext("name"),
         "year_published": int(item.findtext("yearpublished") or 0),
         "image": item.findtext("image"),
         "thumbnail": item.findtext("thumbnail"),
         "num_plays": int(item.findtext("numplays") or 0),
-        "status": item.find("status").attrib if item.find("status") is not None else {}
+        "status_owned": item.find("status").attrib.get("own") == "1" if item.find("status") is not None else False,
+        "status_preordered": item.find("status").attrib.get("preordered") == "1" if item.find("status") is not None else False,
+        "status_wishlist": item.find("status").attrib.get("wishlist") == "1" if item.find("status") is not None else False,
+        "status_fortrade": item.find("status").attrib.get("fortrade") == "1" if item.find("status") is not None else False,
+        "status_prevowned": item.find("status").attrib.get("prevowned") == "1" if item.find("status") is not None else False,
+        "status_wanttoplay": item.find("status").attrib.get("wanttoplay") == "1" if item.find("status") is not None else False,
+        "status_wanttobuy": item.find("status").attrib.get("wanttobuy") == "1" if item.find("status") is not None else False,
+        "status_wishlist_priority": int(item.find("status").attrib.get("wishlistpriority") or 0) if item.find("status") is not None else None,
     }
 
 
@@ -53,22 +60,21 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
 
     links = detail_item.findall("link")
     return {
-        "original_name": name,
+        "original_title": name,
         "description": detail_item.findtext("description"),
         "mechanics": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamemechanic"],
         "designers": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamedesigner"],
         "artists": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgameartist"],
-        "stats": {
-            "my_rating": float(stats_el.attrib.get("value", 0)) if stats_el is not None else None,
-            "average_rating": float(stats_el.find("average").attrib.get("value", 0)) if stats_el is not None and stats_el.find("average") is not None else None,
-            "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
-            "min_players": int(detail_item.attrib.get("minplayers", 0)),
-            "max_players": int(detail_item.attrib.get("maxplayers", 0)),
-            "min_playtime": int(detail_item.attrib.get("minplaytime", 0)),
-            "max_playtime": int(detail_item.attrib.get("maxplaytime", 0)),
-            "play_time": int(detail_item.attrib.get("playingtime", 0)),
-            "min_age": int(detail_item.attrib.get("minage", 0))
-        }
+        "my_rating": float(stats_el.attrib.get("value", 0)) if stats_el is not None else None,
+        "average_rating": float(stats_el.find("average").attrib.get("value", 0)) if stats_el is not None and stats_el.find("average") is not None else None,
+        "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
+        "min_players": int(detail_item.attrib.get("minplayers", 0)),
+        "max_players": int(detail_item.attrib.get("maxplayers", 0)),
+        "min_playtime": int(detail_item.attrib.get("minplaytime", 0)),
+        "max_playtime": int(detail_item.attrib.get("maxplaytime", 0)),
+        "play_time": int(detail_item.attrib.get("playingtime", 0)),
+        "min_age": int(detail_item.attrib.get("minage", 0)),
+        "type": detail_item.attrib.get("type", None)
     }
 
 
