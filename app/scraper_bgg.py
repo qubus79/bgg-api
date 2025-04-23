@@ -77,7 +77,7 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "max_playtime": int(detail_item.find("maxplaytime").attrib.get("value", 0)) if detail_item.find("maxplaytime") is not None else None,
         "play_time": int(detail_item.find("playingtime").attrib.get("value", 0)) if detail_item.find("playingtime") is not None else None,
         "min_age": int(detail_item.find("minage").attrib.get("value", 0)) if detail_item.find("minage") is not None else None,
-        "type": detail_item.attrib.get("type", None)
+        "type": detail_item.attrib.get("type", None),
         "weight": average_weight,
     }
 
