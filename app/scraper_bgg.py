@@ -26,14 +26,14 @@ def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
 
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
     
-    stats_el = item.find("statistics/rating")
-    ranks = stats_el.find("ranks") if stats_el is not None else None
-    bgg_rank = None
-    if ranks is not None:
-        for rank in ranks.findall("rank"):
-            if rank.attrib.get("friendlyname") == "Board Game Rank":
-                bgg_rank = rank.attrib.get("value")
-                break
+    # stats_el = item.find("statistics/rating")
+    # ranks = stats_el.find("ranks") if stats_el is not None else None
+    # bgg_rank = None
+    # if ranks is not None:
+    #     for rank in ranks.findall("rank"):
+    #         if rank.attrib.get("friendlyname") == "Board Game Rank":
+    #             bgg_rank = rank.attrib.get("value")
+    #             break
 
     return {
         "title": item.findtext("name"),
@@ -41,9 +41,9 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         "image": item.findtext("image"),
         "thumbnail": item.findtext("thumbnail"),
         "num_plays": int(item.findtext("numplays") or 0),
-        "my_rating": float(stats_el.attrib.get("value", 0)) if stats_el is not None else None,
-        "average_rating": float(stats_el.find("average").attrib.get("value", 0)) if stats_el is not None and stats_el.find("average") is not None else None,
-        "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
+        "my_rating": float(item.find("stats/rating").attrib.get("value", 0)) if item.find("stats/rating") is not None else None,
+        "average_rating": float(item.find("stats/rating/average").attrib.get("value", 0)) if item.find("stats/rating/average") is not None else None,
+        "bgg_rank": int(item.find("stats/rating/ranks/rank").attrib.get("value")) if item.find("stats/rating/ranks/rank") is not None and item.find("stats/rating/ranks/rank").attrib.get("value").isdigit() else None,
         "min_players": int(item.attrib.get("minplayers", 0)),
         "max_players": int(item.attrib.get("maxplayers", 0)),
         "min_playtime": int(item.attrib.get("minplaytime", 0)),
