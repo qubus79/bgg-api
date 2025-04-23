@@ -25,16 +25,6 @@ def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
 
 
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
-    
-    # stats_el = item.find("statistics/rating")
-    # ranks = stats_el.find("ranks") if stats_el is not None else None
-    # bgg_rank = None
-    # if ranks is not None:
-    #     for rank in ranks.findall("rank"):
-    #         if rank.attrib.get("friendlyname") == "Board Game Rank":
-    #             bgg_rank = rank.attrib.get("value")
-    #             break
-
     return {
         "title": item.findtext("name"),
         "year_published": int(item.findtext("yearpublished") or 0),
@@ -60,7 +50,6 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
 
 
 def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
-
     name = None
     for name_el in detail_item.findall("name"):
         if name_el.attrib.get("type") == "primary":
@@ -68,6 +57,14 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
             break
 
     links = detail_item.findall("link")
+    stats_el = detail_item.find("statistics/ratings")
+    average_weight = None
+    if stats_el is not None and stats_el.find("averageweight") is not None:
+        try:
+            average_weight = float(stats_el.find("averageweight").attrib.get("value"))
+        except (ValueError, TypeError):
+            average_weight = None
+
     return {
         "original_title": name,
         "description": detail_item.findtext("description"),
@@ -81,11 +78,12 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "play_time": int(detail_item.find("playingtime").attrib.get("value", 0)) if detail_item.find("playingtime") is not None else None,
         "min_age": int(detail_item.find("minage").attrib.get("value", 0)) if detail_item.find("minage") is not None else None,
         "type": detail_item.attrib.get("type", None)
+        "weight": average_weight,
     }
 
 
 async def fetch_bgg_collection(username: str) -> None:
-    log_info("📥 Rozpoczynam pobieranie kolekcji BGG")
+    log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
     collection_url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&stats=1"
     thing_url = "https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1"
 
@@ -96,14 +94,15 @@ async def fetch_bgg_collection(username: str) -> None:
         log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
 
         for idx, (bgg_id, item) in enumerate(collection_data.items(), start=1):
-            log_info(f"\n[{idx}/{len(collection_data)}] 🧩 Przetwarzam grę ID={bgg_id}...")
-
             basic_data = extract_collection_basics(item)
+            title = basic_data.get("title") or f"ID={bgg_id}"
+            log_info(f"\n[{idx}/{len(collection_data)}] 🧩 Przetwarzam grę: {title} (ID={bgg_id})")
+
             detail_url = thing_url.format(bgg_id=bgg_id)
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
             if not detail_item:
-                log_info(f"⚠️ Pominięto grę {bgg_id} - brak danych szczegółowych")
+                log_info(f"⚠️ Pominięto grę {title} (ID={bgg_id}) - brak danych szczegółowych")
                 continue
 
             detailed_data = extract_details(detail_item)
@@ -120,15 +119,28 @@ async def fetch_bgg_collection(username: str) -> None:
                 if existing:
                     for field, value in full_data.items():
                         setattr(existing, field, value)
-                    log_info(f"♻️ Zaktualizowano dane gry ID={bgg_id}")
+                    log_info(f"♻️ Zaktualizowano dane gry: {title}")
                 else:
                     session.add(BGGGame(**full_data))
-                    log_info(f"➕ Dodano nową grę ID={bgg_id}")
+                    log_info(f"➕ Dodano nową grę: {title}")
 
                 await session.commit()
 
             pause_time = 2
-            log_info("⏳ Pauza {pause_time} sekund by uniknąć limitów BGG")
+            log_info(f"⏳ Pauza {pause_time} sekund by uniknąć limitów BGG")
             time.sleep(pause_time)
+    
+    # 🧹 Usuwanie gier, których nie ma już w kolekcji
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(BGGGame.bgg_id))
+        all_db_ids = {row for row in result.scalars().all()}
+        to_delete = all_db_ids - current_ids
+
+        if to_delete:
+            log_info(f"🗑 Usuwam {len(to_delete)} gier, których nie ma już w kolekcji...")
+            await session.execute(
+                BGGGame.__table__.delete().where(BGGGame.bgg_id.in_(to_delete))
+            )
+            await session.commit()
 
     log_success("🎉 Zakończono przetwarzanie całej kolekcji BGG")

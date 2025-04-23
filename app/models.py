@@ -26,6 +26,7 @@ class BGGGame(Base):
     my_rating = Column(Float, nullable=True)
     average_rating = Column(Float, nullable=True)
     bgg_rank = Column(Integer, nullable=True)
+    weight = Column(Float, nullable=True)
 
     min_players = Column(Integer, nullable=True)
     max_players = Column(Integer, nullable=True)
