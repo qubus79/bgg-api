@@ -41,7 +41,11 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         "image": item.findtext("image"),
         "thumbnail": item.findtext("thumbnail"),
         "num_plays": int(item.findtext("numplays") or 0),
-        "my_rating": float(item.find("stats/rating").attrib.get("value", 0)) if item.find("stats/rating") is not None else None,
+        "my_rating": (
+            float(rating.attrib.get("value"))
+            if (rating := item.find("stats/rating")) is not None and rating.attrib.get("value") not in [None, "N/A"]
+            else None
+        ),
         "average_rating": float(item.find("stats/rating/average").attrib.get("value", 0)) if item.find("stats/rating/average") is not None else None,
         "bgg_rank": int(item.find("stats/rating/ranks/rank").attrib.get("value")) if item.find("stats/rating/ranks/rank") is not None and item.find("stats/rating/ranks/rank").attrib.get("value").isdigit() else None,
         "min_players": int(item.attrib.get("minplayers", 0)),
