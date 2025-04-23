@@ -26,7 +26,7 @@ def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
 
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
     
-    stats_el = detail_item.find("statistics/rating")
+    stats_el = item.find("statistics/rating")
     ranks = stats_el.find("ranks") if stats_el is not None else None
     bgg_rank = None
     if ranks is not None:
@@ -34,7 +34,7 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
             if rank.attrib.get("friendlyname") == "Board Game Rank":
                 bgg_rank = rank.attrib.get("value")
                 break
-                
+
     return {
         "title": item.findtext("name"),
         "year_published": int(item.findtext("yearpublished") or 0),
@@ -44,11 +44,11 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         "my_rating": float(stats_el.attrib.get("value", 0)) if stats_el is not None else None,
         "average_rating": float(stats_el.find("average").attrib.get("value", 0)) if stats_el is not None and stats_el.find("average") is not None else None,
         "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
-        "min_players": int(detail_item.attrib.get("minplayers", 0)),
-        "max_players": int(detail_item.attrib.get("maxplayers", 0)),
-        "min_playtime": int(detail_item.attrib.get("minplaytime", 0)),
-        "max_playtime": int(detail_item.attrib.get("maxplaytime", 0)),
-        "play_time": int(detail_item.attrib.get("playingtime", 0)),
+        "min_players": int(item.attrib.get("minplayers", 0)),
+        "max_players": int(item.attrib.get("maxplayers", 0)),
+        "min_playtime": int(item.attrib.get("minplaytime", 0)),
+        "max_playtime": int(item.attrib.get("maxplaytime", 0)),
+        "play_time": int(item.attrib.get("playingtime", 0)),
         "status_owned": item.find("status").attrib.get("own") == "1" if item.find("status") is not None else False,
         "status_preordered": item.find("status").attrib.get("preordered") == "1" if item.find("status") is not None else False,
         "status_wishlist": item.find("status").attrib.get("wishlist") == "1" if item.find("status") is not None else False,
