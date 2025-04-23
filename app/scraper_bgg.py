@@ -130,17 +130,17 @@ async def fetch_bgg_collection(username: str) -> None:
             log_info(f"⏳ Pauza {pause_time} sekund by uniknąć limitów BGG")
             time.sleep(pause_time)
     
-    # 🧹 Usuwanie gier, których nie ma już w kolekcji
+    # Usuwanie gier, których już nie ma w kolekcji
+    current_ids = set(int(bgg_id) for bgg_id in collection_data.keys())
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(BGGGame.bgg_id))
-        all_db_ids = {row for row in result.scalars().all()}
-        to_delete = all_db_ids - current_ids
+        all_db_ids = set(result.scalars().all())
 
+        to_delete = all_db_ids - current_ids
         if to_delete:
-            log_info(f"🗑 Usuwam {len(to_delete)} gier, których nie ma już w kolekcji...")
-            await session.execute(
-                BGGGame.__table__.delete().where(BGGGame.bgg_id.in_(to_delete))
-            )
+            await session.execute(BGGGame.__table__.delete().where(BGGGame.bgg_id.in_(to_delete)))
             await session.commit()
+            log_info(f"🗑 Usunięto {len(to_delete)} gier spoza kolekcji")
 
     log_success("🎉 Zakończono przetwarzanie całej kolekcji BGG")
