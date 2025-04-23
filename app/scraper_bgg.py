@@ -25,6 +25,16 @@ def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
 
 
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
+    
+    stats_el = detail_item.find("statistics/rating")
+    ranks = stats_el.find("ranks") if stats_el is not None else None
+    bgg_rank = None
+    if ranks is not None:
+        for rank in ranks.findall("rank"):
+            if rank.attrib.get("friendlyname") == "Board Game Rank":
+                bgg_rank = rank.attrib.get("value")
+                break
+                
     return {
         "title": item.findtext("name"),
         "year_published": int(item.findtext("yearpublished") or 0),
@@ -51,14 +61,14 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
 
 
 def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
-    stats_el = detail_item.find("statistics/rating")
-    ranks = stats_el.find("ranks") if stats_el is not None else None
-    bgg_rank = None
-    if ranks is not None:
-        for rank in ranks.findall("rank"):
-            if rank.attrib.get("friendlyname") == "Board Game Rank":
-                bgg_rank = rank.attrib.get("value")
-                break
+    # stats_el = detail_item.find("statistics/rating")
+    # ranks = stats_el.find("ranks") if stats_el is not None else None
+    # bgg_rank = None
+    # if ranks is not None:
+    #     for rank in ranks.findall("rank"):
+    #         if rank.attrib.get("friendlyname") == "Board Game Rank":
+    #             bgg_rank = rank.attrib.get("value")
+    #             break
 
     name = None
     for name_el in detail_item.findall("name"):
