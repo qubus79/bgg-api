@@ -21,7 +21,7 @@ async def init_bgg_db():
         await conn.run_sync(Base.metadata.create_all)
 
 
-def setup_scheduler():
+async def setup_scheduler():
     log_info("Scheduler started. Updating BGG collection every 6 hours.")
     scheduler = AsyncIOScheduler()
     scheduler.add_job(update_bgg_collection, IntervalTrigger(hours=6), id="update_bgg_collection_job", replace_existing=True)
