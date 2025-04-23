@@ -48,11 +48,6 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         ),
         "average_rating": float(item.find("stats/rating/average").attrib.get("value", 0)) if item.find("stats/rating/average") is not None else None,
         "bgg_rank": int(item.find("stats/rating/ranks/rank").attrib.get("value")) if item.find("stats/rating/ranks/rank") is not None and item.find("stats/rating/ranks/rank").attrib.get("value").isdigit() else None,
-        # "min_players": int(item.attrib.get("minplayers", 0)),
-        # "max_players": int(item.attrib.get("maxplayers", 0)),
-        # "min_playtime": int(item.attrib.get("minplaytime", 0)),
-        # "max_playtime": int(item.attrib.get("maxplaytime", 0)),
-        # "play_time": int(item.attrib.get("playingtime", 0)),
         "status_owned": item.find("status").attrib.get("own") == "1" if item.find("status") is not None else False,
         "status_preordered": item.find("status").attrib.get("preordered") == "1" if item.find("status") is not None else False,
         "status_wishlist": item.find("status").attrib.get("wishlist") == "1" if item.find("status") is not None else False,
@@ -65,14 +60,6 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
 
 
 def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
-    # stats_el = detail_item.find("statistics/rating")
-    # ranks = stats_el.find("ranks") if stats_el is not None else None
-    # bgg_rank = None
-    # if ranks is not None:
-    #     for rank in ranks.findall("rank"):
-    #         if rank.attrib.get("friendlyname") == "Board Game Rank":
-    #             bgg_rank = rank.attrib.get("value")
-    #             break
 
     name = None
     for name_el in detail_item.findall("name"):
@@ -93,15 +80,6 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "max_playtime": int(detail_item.find("maxplaytime").attrib.get("value", 0)) if detail_item.find("maxplaytime") is not None else None,
         "play_time": int(detail_item.find("playingtime").attrib.get("value", 0)) if detail_item.find("playingtime") is not None else None,
         "min_age": int(detail_item.find("minage").attrib.get("value", 0)) if detail_item.find("minage") is not None else None,
-        # "my_rating": float(stats_el.attrib.get("value", 0)) if stats_el is not None else None,
-        # "average_rating": float(stats_el.find("average").attrib.get("value", 0)) if stats_el is not None and stats_el.find("average") is not None else None,
-        # "bgg_rank": int(bgg_rank) if bgg_rank and bgg_rank.isdigit() else None,
-        # "min_players": int(detail_item.attrib.get("minplayers", 0)),
-        # "max_players": int(detail_item.attrib.get("maxplayers", 0)),
-        # "min_playtime": int(detail_item.attrib.get("minplaytime", 0)),
-        # "max_playtime": int(detail_item.attrib.get("maxplaytime", 0)),
-        # "play_time": int(detail_item.attrib.get("playingtime", 0)),
-        # "min_age": int(detail_item.attrib.get("minage", 0)),
         "type": detail_item.attrib.get("type", None)
     }
 
@@ -149,7 +127,8 @@ async def fetch_bgg_collection(username: str) -> None:
 
                 await session.commit()
 
-            log_info("⏳ Pauza 5 sekund by uniknąć limitów BGG")
-            time.sleep(5)
+            pause_time = 2
+            log_info("⏳ Pauza {pause_time} sekund by uniknąć limitów BGG")
+            time.sleep(pause_time)
 
     log_success("🎉 Zakończono przetwarzanie całej kolekcji BGG")
