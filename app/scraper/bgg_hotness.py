@@ -115,7 +115,7 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
         "rank": int(item.attrib.get("rank", 0)),
         "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
         "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
-        "bgg_url": f"https://boardgamegeek.com/boardgamedesigner/{item.attrib['id']}"
+        "bgg_url": f"https://boardgamegeek.com/boardgamedesigner/{item.attrib['id']}",
         "last_modified": datetime.utcnow(),
     }
 
