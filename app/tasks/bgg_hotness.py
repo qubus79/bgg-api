@@ -7,6 +7,8 @@ from app.models.bgg_hotness import BGGHotPerson
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from app.utils.logging import log_info, log_success
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # ---------------- HOT GAMES ----------------
 
@@ -48,3 +50,13 @@ async def get_hot_persons():
 
 async def clear_hot_persons(session: AsyncSession):
     await session.execute(delete(BGGHotPerson))
+
+
+# ---------------- SCHEDULER ----------------
+
+async def setup_hotness_scheduler():
+    log_info("Scheduler started. Updating BGG Hotness every 2 hours.")
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(update_hot_games, IntervalTrigger(hours=2), id="update_hot_games", replace_existing=True)
+    scheduler.add_job(update_hot_persons, IntervalTrigger(hours=2), id="update_hot_persons", replace_existing=True)
+    scheduler.start()
