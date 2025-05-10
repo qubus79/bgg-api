@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.database import engine, Base, get_db
-from app.routes import bgg_game, bgg_accessory
+from app.routes import bgg_game
+from app.routes import bgg_accessory
 from app.models.bgg_game import BGGGame
 from app.models.bgg_accessory import BGGAccessory
 from app.tasks.bgg_game import setup_scheduler
