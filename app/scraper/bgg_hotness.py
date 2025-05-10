@@ -24,7 +24,7 @@ async def fetch_bgg_hotness_games():
     items = root.findall("item")
 
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(BGGHotnessGame))
+        await session.execute(delete(BGGHotGame))
         for item in items:
             session.add(BGGHotnessGame(
                 bgg_id=int(item.attrib["id"]),
@@ -47,7 +47,7 @@ async def fetch_bgg_hotness_persons():
     items = root.findall("item")
 
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(BGGHotnessPerson))
+        await session.execute(delete(BGGHotPerson))
         for item in items:
             session.add(BGGHotnessPerson(
                 bgg_id=int(item.attrib["id"]),
