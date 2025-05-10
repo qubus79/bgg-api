@@ -4,9 +4,9 @@ from typing import Dict, Any
 import asyncio
 import time
 from app.database import AsyncSessionLocal
-from app.models import BGGGame
+from app.models.bgg_game import BGGGame
 from sqlalchemy import select
-from app.utils import log_info, log_success
+from app.utils.logging import log_info, log_success
 
 
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:

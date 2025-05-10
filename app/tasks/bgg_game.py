@@ -2,18 +2,17 @@ from sqlalchemy import select, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from app.database import AsyncSessionLocal
-from app.models import BGGGame
-from app.scraper_bgg import fetch_bgg_collection
-from app.utils import log_info, log_success
+from app.models.bgg_game import BGGGame
+from app.scraper.bgg_game import fetch_bgg_collection
+from app.utils.logging import log_info, log_success
 from app.database import engine
-from app.models import Base
+from app.models.bgg_game import Base
 import asyncio
 
 USERNAME = "qubus"
 
-
 # do testów
-from app.utils import log_info, log_success, log_warning, log_error
+from app.utils.logging import log_info, log_success, log_warning, log_error
 
 
 async def init_bgg_db():
