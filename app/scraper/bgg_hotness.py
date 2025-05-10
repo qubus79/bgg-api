@@ -1,60 +1,50 @@
-import httpx
-import xml.etree.ElementTree as ET
-from datetime import datetime
+# tasks/bgg_hotness.py
+
+from app.scraper.bgg_hotness import fetch_hot_games, fetch_hot_persons
 from app.database import AsyncSessionLocal
-from app.models.bgg_hotness import BGGHotGame
-from app.models.bgg_hotness import BGGHotPerson
-from sqlalchemy import delete
+from app.models.bgg_hot_game import BGGHotGame
+from app.models.bgg_hot_person import BGGHotPerson
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 from app.utils.logging import log_info, log_success
 
-async def fetch_xml(url: str) -> ET.Element:
-    async with httpx.AsyncClient() as client:
-        log_info(f"➡️ Fetching XML from: {url}")
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return ET.fromstring(resp.text)
+# ---------------- HOT GAMES ----------------
 
-# ----------------------------
-# 🟣 HOTNESS GAMES SCRAPER
-# ----------------------------
-async def fetch_bgg_hotness_games():
-    url = "https://boardgamegeek.com/xmlapi2/hot?type=boardgame"
-    root = await fetch_xml(url)
-
-    items = root.findall("item")
-
+async def update_hot_games():
+    log_info("🔄 Aktualizacja listy hot games z BGG")
+    games_data = await fetch_hot_games()
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(BGGHotGame))
-        for item in items:
-            session.add(BGGHotGame(
-                bgg_id=int(item.attrib["id"]),
-                rank=int(item.attrib["rank"]),
-                name=item.find("name").attrib["value"],
-                year_published=int(item.find("yearpublished").attrib.get("value", 0)) if item.find("yearpublished") is not None else None,
-                image=item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
-                last_modified=datetime.utcnow(),
-            ))
+        await clear_hot_games(session)
+        session.add_all([BGGHotGame(**game) for game in games_data])
         await session.commit()
-        log_success(f"🎲 Synced {len(items)} hotness games from BGG")
+    log_success(f"✅ Zapisano {len(games_data)} gier z Hotness")
+    return {"status": "done", "count": len(games_data)}
 
-# ----------------------------
-# 🟡 HOTNESS PERSONS SCRAPER
-# ----------------------------
-async def fetch_bgg_hotness_persons():
-    url = "https://boardgamegeek.com/xmlapi2/hot?type=boardgameperson"
-    root = await fetch_xml(url)
-
-    items = root.findall("item")
-
+async def get_hot_games():
     async with AsyncSessionLocal() as session:
-        await session.execute(delete(BGGHotPerson))
-        for item in items:
-            session.add(BGGHotPerson(
-                bgg_id=int(item.attrib["id"]),
-                rank=int(item.attrib["rank"]),
-                name=item.find("name").attrib["value"],
-                image=item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
-                last_modified=datetime.utcnow(),
-            ))
+        result = await session.execute(select(BGGHotGame))
+        return result.scalars().all()
+
+async def clear_hot_games(session: AsyncSession):
+    await session.execute(delete(BGGHotGame))
+
+
+# ---------------- HOT PERSONS ----------------
+
+async def update_hot_persons():
+    log_info("🔄 Aktualizacja listy hot persons z BGG")
+    persons_data = await fetch_hot_persons()
+    async with AsyncSessionLocal() as session:
+        await clear_hot_persons(session)
+        session.add_all([BGGHotPerson(**person) for person in persons_data])
         await session.commit()
-        log_success(f"👤 Synced {len(items)} hotness persons from BGG")
+    log_success(f"✅ Zapisano {len(persons_data)} osób z Hotness")
+    return {"status": "done", "count": len(persons_data)}
+
+async def get_hot_persons():
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(BGGHotPerson))
+        return result.scalars().all()
+
+async def clear_hot_persons(session: AsyncSession):
+    await session.execute(delete(BGGHotPerson))
