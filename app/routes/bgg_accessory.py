@@ -11,7 +11,7 @@ async def health():
 
 @router.get("/stats")
 async def stats():
-    return await bgg_accessory.get_stats()
+    return await bgg_accessory.get_accessory_stats()
 
 @router.post("/update")
 async def update_bgg_accessories():
