@@ -11,8 +11,8 @@ from app.routes.bgg_accessory import router as accessories_router
 from app.routes.bgg_hotness import router as hotness_router
 from app.models.bgg_game import BGGGame
 from app.models.bgg_accessory import BGGAccessory
-from app.models.bgg_hotness_game import BGGHotnessGame
-from app.models.bgg_hotness_person import BGGHotnessPerson
+from app.models.bgg_hotness import BGGHotGame
+from app.models.bgg_hotness import BGGHotPerson
 from app.tasks.bgg_game import setup_scheduler
 from app.tasks.bgg_accessory import setup_accessory_scheduler
 from app.tasks.bgg_hotness import setup_hotness_scheduler

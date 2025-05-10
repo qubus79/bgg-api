@@ -2,8 +2,8 @@
 
 from app.scraper.bgg_hotness import fetch_bgg_hotness_games, fetch_bgg_hotness_persons
 from app.database import AsyncSessionLocal
-from app.models.bgg_hot_game import BGGHotGame
-from app.models.bgg_hot_person import BGGHotPerson
+from app.models.bgg_hotness import BGGHotGame
+from app.models.bgg_hotness import BGGHotPerson
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from app.utils.logging import log_info, log_success

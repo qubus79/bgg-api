@@ -2,8 +2,8 @@ import httpx
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from app.database import AsyncSessionLocal
-from app.models.bgg_hotness_game import BGGHotnessGame
-from app.models.bgg_hotness_person import BGGHotnessPerson
+from app.models.bgg_hotness import BGGHotGame
+from app.models.bgg_hotness import BGGHotPerson
 from sqlalchemy import delete
 from app.utils.logging import log_info, log_success
 
