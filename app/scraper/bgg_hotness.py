@@ -1,50 +1,102 @@
-# tasks/bgg_hotness.py
+# app/scraper/bgg_hotness.py
 
-from app.scraper.bgg_hotness import fetch_hot_games, fetch_hot_persons
+import asyncio
+import httpx
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from typing import List, Dict, Any
 from app.database import AsyncSessionLocal
-from app.models.bgg_hot_game import BGGHotGame
-from app.models.bgg_hot_person import BGGHotPerson
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
-from app.utils.logging import log_info, log_success
+from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
+from sqlalchemy import delete
+from app.utils.logging import log_info, log_success, log_error, log_warning
 
-# ---------------- HOT GAMES ----------------
+HOT_GAMES_URL = "https://boardgamegeek.com/xmlapi2/hot?type=boardgame"
+HOT_PERSONS_URL = "https://boardgamegeek.com/xmlapi2/hot?type=person"
 
-async def update_hot_games():
-    log_info("🔄 Aktualizacja listy hot games z BGG")
-    games_data = await fetch_hot_games()
-    async with AsyncSessionLocal() as session:
-        await clear_hot_games(session)
-        session.add_all([BGGHotGame(**game) for game in games_data])
-        await session.commit()
-    log_success(f"✅ Zapisano {len(games_data)} gier z Hotness")
-    return {"status": "done", "count": len(games_data)}
+# ----------------------------
+# 🌐 XML Fetching
+# ----------------------------
 
-async def get_hot_games():
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(BGGHotGame))
-        return result.scalars().all()
+async def fetch_xml(url: str) -> ET.Element:
+    log_info(f"➡️ Fetching XML from: {url}")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url)
+        while response.status_code == 202:
+            log_info("⏳ Czekam na przetworzenie danych przez BGG...")
+            await asyncio.sleep(2)
+            response = await client.get(url)
+        response.raise_for_status()
+        return ET.fromstring(response.text)
 
-async def clear_hot_games(session: AsyncSession):
-    await session.execute(delete(BGGHotGame))
+# ----------------------------
+# 🟣 HOTNESS GAMES
+# ----------------------------
 
+def extract_hot_game(item: ET.Element) -> Dict[str, Any]:
+    return {
+        "bgg_id": int(item.attrib["id"]),
+        "rank": int(item.attrib.get("rank", 0)),
+        "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
+        "year_published": int(item.find("yearpublished").attrib.get("value", 0)) if item.find("yearpublished") is not None else None,
+        "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
+        "last_modified": datetime.utcnow(),
+    }
 
-# ---------------- HOT PERSONS ----------------
+async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
+    log_info("🎲 Rozpoczynam pobieranie Hotness Games z BGG")
+    try:
+        root = await fetch_xml(HOT_GAMES_URL)
+        items = root.findall("item")
+        games = []
 
-async def update_hot_persons():
-    log_info("🔄 Aktualizacja listy hot persons z BGG")
-    persons_data = await fetch_hot_persons()
-    async with AsyncSessionLocal() as session:
-        await clear_hot_persons(session)
-        session.add_all([BGGHotPerson(**person) for person in persons_data])
-        await session.commit()
-    log_success(f"✅ Zapisano {len(persons_data)} osób z Hotness")
-    return {"status": "done", "count": len(persons_data)}
+        for idx, item in enumerate(items, start=1):
+            game = extract_hot_game(item)
+            log_info(f"[{idx}/{len(items)}] 🔥 Rank {game['rank']} - {game['name']}")
+            games.append(game)
 
-async def get_hot_persons():
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(BGGHotPerson))
-        return result.scalars().all()
+        log_success(f"🎲 Zakończono przetwarzanie {len(games)} hotness gier")
+        return games
 
-async def clear_hot_persons(session: AsyncSession):
-    await session.execute(delete(BGGHotPerson))
+    except httpx.HTTPError as e:
+        log_error(f"❌ HTTP error while fetching hot games: {e}")
+    except ET.ParseError as e:
+        log_error(f"❌ XML parsing error for hot games: {e}")
+    except Exception as e:
+        log_error(f"❌ Unexpected error while parsing hot games: {e}")
+    return []
+
+# ----------------------------
+# 🟡 HOTNESS PERSONS
+# ----------------------------
+
+def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
+    return {
+        "bgg_id": int(item.attrib["id"]),
+        "rank": int(item.attrib.get("rank", 0)),
+        "name": item.findtext("name") or "",
+        "image": item.findtext("thumbnail") or "",
+        "last_modified": datetime.utcnow(),
+    }
+
+async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
+    log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
+    try:
+        root = await fetch_xml(HOT_PERSONS_URL)
+        items = root.findall("item")
+        persons = []
+
+        for idx, item in enumerate(items, start=1):
+            person = extract_hot_person(item)
+            log_info(f"[{idx}/{len(items)}] 👤 Rank {person['rank']} - {person['name']}")
+            persons.append(person)
+
+        log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
+        return persons
+
+    except httpx.HTTPError as e:
+        log_error(f"❌ HTTP error while fetching hot persons: {e}")
+    except ET.ParseError as e:
+        log_error(f"❌ XML parsing error for hot persons: {e}")
+    except Exception as e:
+        log_error(f"❌ Unexpected error while parsing hot persons: {e}")
+    return []
