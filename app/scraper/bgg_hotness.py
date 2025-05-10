@@ -52,6 +52,7 @@ def extract_hot_game(item: ET.Element) -> Dict[str, Any]:
         "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
         "year_published": int(item.find("yearpublished").attrib.get("value", 0)) if item.find("yearpublished") is not None else None,
         "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
+        "bgg_url": f"https://boardgamegeek.com/boardgame/{item.attrib['id']}",
         "last_modified": datetime.utcnow(),
     }
 
@@ -128,13 +129,14 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
         "rank": int(item.attrib.get("rank", 0)),
         "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
         "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
+        "bgg_url": f"https://boardgamegeek.com/boardgamedesigner/{item.attrib['id']}",
         "last_modified": datetime.utcnow(),
     }
 
 async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
     log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
     try:
-        root = await fetch_xml(HOT_PERSONS_URL)
+        root = await fetch_xml(client, HOT_PERSONS_URL)
         items = root.findall("item")
         persons = []
 
