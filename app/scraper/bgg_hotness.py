@@ -11,7 +11,7 @@ from sqlalchemy import delete
 from app.utils.logging import log_info, log_success, log_error, log_warning
 
 HOT_GAMES_URL = "https://boardgamegeek.com/xmlapi2/hot?type=boardgame"
-HOT_PERSONS_URL = "https://boardgamegeek.com/xmlapi2/hot?type=person"
+HOT_PERSONS_URL = "https://boardgamegeek.com/xmlapi2/hot?type=boardgameperson"
 
 # ----------------------------
 # 🌐 XML Fetching
