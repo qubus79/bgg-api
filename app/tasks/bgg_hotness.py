@@ -12,23 +12,26 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 async def update_hot_games():
     log_info("🔄 Aktualizacja listy hot games z BGG")
-    try:
-        games_data = await fetch_bgg_hotness_games()
-        log_info(f"📦 Otrzymano {len(games_data)} gier z BGG")
+    games_data = await fetch_bgg_hotness_games()
+    updated, added = 0, 0
 
-        async with AsyncSessionLocal() as session:
-            await clear_hot_games(session)
-            log_info("🗑 Usunięto stare dane hot games")
+    async with AsyncSessionLocal() as session:
+        for game_data in games_data:
+            result = await session.execute(select(BGGHotGame).where(BGGHotGame.bgg_id == game_data["bgg_id"]))
+            existing = result.scalars().first()
 
-            session.add_all([BGGHotGame(**game) for game in games_data])
-            await session.commit()
-            log_success(f"✅ Zapisano {len(games_data)} gier z Hotness")
+            if existing:
+                for field, value in game_data.items():
+                    setattr(existing, field, value)
+                updated += 1
+            else:
+                session.add(BGGHotGame(**game_data))
+                added += 1
 
-        return {"status": "done", "count": len(games_data)}
+        await session.commit()
 
-    except Exception as e:
-        log_error(f"❌ Błąd podczas aktualizacji hot games: {e}")
-        return {"status": "error", "message": str(e)}
+    log_success(f"✅ Hotness games zapisane: {added} nowych, {updated} zaktualizowanych")
+    return {"status": "done", "added": added, "updated": updated}
 
 
 async def get_hot_games():
@@ -60,23 +63,26 @@ async def get_hotness_game_stats():
 
 async def update_hot_persons():
     log_info("🔄 Aktualizacja listy hot persons z BGG")
-    try:
-        persons_data = await fetch_bgg_hotness_persons()
-        log_info(f"📦 Otrzymano {len(persons_data)} osób z BGG")
+    persons_data = await fetch_bgg_hotness_persons()
+    updated, added = 0, 0
 
-        async with AsyncSessionLocal() as session:
-            await clear_hot_persons(session)
-            log_info("🗑 Usunięto stare dane hot persons")
+    async with AsyncSessionLocal() as session:
+        for person_data in persons_data:
+            result = await session.execute(select(BGGHotPerson).where(BGGHotPerson.bgg_id == person_data["bgg_id"]))
+            existing = result.scalars().first()
 
-            session.add_all([BGGHotPerson(**person) for person in persons_data])
-            await session.commit()
-            log_success(f"✅ Zapisano {len(persons_data)} osób z Hotness")
+            if existing:
+                for field, value in person_data.items():
+                    setattr(existing, field, value)
+                updated += 1
+            else:
+                session.add(BGGHotPerson(**person_data))
+                added += 1
 
-        return {"status": "done", "count": len(persons_data)}
+        await session.commit()
 
-    except Exception as e:
-        log_error(f"❌ Błąd podczas aktualizacji hot persons: {e}")
-        return {"status": "error", "message": str(e)}
+    log_success(f"✅ Hotness persons zapisane: {added} nowych, {updated} zaktualizowanych")
+    return {"status": "done", "added": added, "updated": updated}
 
 
 async def get_hot_persons():
