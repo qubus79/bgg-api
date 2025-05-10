@@ -1,11 +1,10 @@
-# tasks/bgg_hotness.py
+# app/tasks/bgg_hotness.py
 
 from app.scraper.bgg_hotness import fetch_bgg_hotness_games, fetch_bgg_hotness_persons
 from app.database import AsyncSessionLocal
-from app.models.bgg_hotness import BGGHotGame
-from app.models.bgg_hotness import BGGHotPerson
+from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from app.utils.logging import log_info, log_success
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -30,12 +29,25 @@ async def get_hot_games():
 async def clear_hot_games(session: AsyncSession):
     await session.execute(delete(BGGHotGame))
 
+async def get_hotness_game_stats():
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("SELECT COUNT(*) FROM bgg_hot_games"))
+        count = result.scalar()
+
+        result2 = await session.execute(text("SELECT MAX(last_modified) FROM bgg_hot_games"))
+        last_update = result2.scalar()
+
+        return {
+            "count": count or 0,
+            "last_update": str(last_update) if last_update else "n/a"
+        }
+
 
 # ---------------- HOT PERSONS ----------------
 
 async def update_hot_persons():
     log_info("🔄 Aktualizacja listy hot persons z BGG")
-    persons_data = await fetch_bgg_hot_persons()
+    persons_data = await fetch_bgg_hotness_persons()
     async with AsyncSessionLocal() as session:
         await clear_hot_persons(session)
         session.add_all([BGGHotPerson(**person) for person in persons_data])
@@ -50,6 +62,19 @@ async def get_hot_persons():
 
 async def clear_hot_persons(session: AsyncSession):
     await session.execute(delete(BGGHotPerson))
+
+async def get_hotness_person_stats():
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("SELECT COUNT(*) FROM bgg_hot_persons"))
+        count = result.scalar()
+
+        result2 = await session.execute(text("SELECT MAX(last_modified) FROM bgg_hot_persons"))
+        last_update = result2.scalar()
+
+        return {
+            "count": count or 0,
+            "last_update": str(last_update) if last_update else "n/a"
+        }
 
 
 # ---------------- SCHEDULER ----------------

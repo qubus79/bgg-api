@@ -17,11 +17,11 @@ async def games_stats():
 
 @router.post("/games/update")
 async def update_hotness_games():
-    return await bgg_hotness.update_bgg_hotness_games()
+    return await bgg_hotness.update_hot_games()
 
 @router.get("/games")
 async def get_hotness_games():
-    return await bgg_hotness.get_bgg_hotness_games()
+    return await bgg_hotness.get_hot_games()
 
 
 # ----------------------------- PERSONS -----------------------------
@@ -36,8 +36,8 @@ async def persons_stats():
 
 @router.post("/persons/update")
 async def update_hotness_persons():
-    return await bgg_hotness.update_bgg_hotness_persons()
+    return await bgg_hotness.update_hot_persons()
 
 @router.get("/persons")
 async def get_hotness_persons():
-    return await bgg_hotness.get_bgg_hotness_persons()
+    return await bgg_hotness.get_hot_persons()
