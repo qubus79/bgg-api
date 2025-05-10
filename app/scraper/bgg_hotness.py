@@ -136,17 +136,18 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
 async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
     log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
     try:
-        root = await fetch_xml(client, HOT_PERSONS_URL)
-        items = root.findall("item")
-        persons = []
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            root = await fetch_xml(client, HOT_PERSONS_URL)
+            items = root.findall("item")
+            persons = []
 
-        for idx, item in enumerate(items, start=1):
-            person = extract_hot_person(item)
-            log_info(f"[{idx}/{len(items)}] 👤 Rank {person['rank']} - {person['name']}")
-            persons.append(person)
+            for idx, item in enumerate(items, start=1):
+                person = extract_hot_person(item)
+                log_info(f"[{idx}/{len(items)}] 👤 Rank {person['rank']} - {person['name']}")
+                persons.append(person)
 
-        log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
-        return persons
+            log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
+            return persons
 
     except httpx.HTTPError as e:
         log_error(f"❌ HTTP error while fetching hot persons: {e}")
