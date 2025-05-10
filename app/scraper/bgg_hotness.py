@@ -73,8 +73,8 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
     return {
         "bgg_id": int(item.attrib["id"]),
         "rank": int(item.attrib.get("rank", 0)),
-        "name": item.findtext("name") or "",
-        "image": item.findtext("thumbnail") or "",
+        "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
+        "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
         "last_modified": datetime.utcnow(),
     }
 

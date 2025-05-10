@@ -39,6 +39,7 @@ async def get_hot_games():
 
 async def clear_hot_games(session: AsyncSession):
     await session.execute(delete(BGGHotGame))
+    await session.execute(text("ALTER SEQUENCE bgg_hot_games_id_seq RESTART WITH 1"))
 
 
 async def get_hotness_game_stats():
@@ -86,6 +87,7 @@ async def get_hot_persons():
 
 async def clear_hot_persons(session: AsyncSession):
     await session.execute(delete(BGGHotPerson))
+    await session.execute(text("ALTER SEQUENCE bgg_hot_persons_id_seq RESTART WITH 1"))
 
 
 async def get_hotness_person_stats():
