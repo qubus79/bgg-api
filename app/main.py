@@ -44,8 +44,8 @@ app.include_router(hotness_router)
 async def read_root(db: AsyncSession = Depends(get_db)):
     games = (await db.execute(select(BGGGame))).scalars().all()
     accessories = (await db.execute(select(BGGAccessory))).scalars().all()
-    hotness_games = (await db.execute(select(BGGHotnessGame))).scalars().all()
-    hotness_people = (await db.execute(select(BGGHotnessPerson))).scalars().all()
+    hotness_games = (await db.execute(select(BGGHotGame))).scalars().all()
+    hotness_people = (await db.execute(select(BGGHotPerson))).scalars().all()
 
     return {
         "message": "BGG API is running!",
