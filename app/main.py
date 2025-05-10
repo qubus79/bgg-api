@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.database import engine, Base, get_db
-from app.routes import bgg_game
-from app.routes import bgg_accessory
+from app.routes.bgg_game import router as games_router
+from app.routes.bgg_accessory import router as accessories_router
 from app.models.bgg_game import BGGGame
 from app.models.bgg_accessory import BGGAccessory
 from app.tasks.bgg_game import setup_scheduler
@@ -25,13 +25,13 @@ async def create_tables():
 @app.on_event("startup")
 async def startup_event():
     await create_tables()
-    await setup_game_scheduler()
+    await setup_scheduler()
     await setup_accessory_scheduler()
     log_info("✅ Application started and both schedulers initialized.")
 
 # Rejestracja routerów
-app.include_router(bgg_game.router)
-app.include_router(bgg_accessory.router)
+app.include_router(games_router)
+app.include_router(accessories_router)
 
 # Główny endpoint z podsumowaniem
 @app.get("/")
