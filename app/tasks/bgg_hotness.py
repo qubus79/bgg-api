@@ -1,6 +1,6 @@
 # tasks/bgg_hotness.py
 
-from app.scraper.bgg_hotness import fetch_hot_games, fetch_hot_persons
+from app.scraper.bgg_hotness import fetch_bgg_hotness_games, fetch_bgg_hotness_persons
 from app.database import AsyncSessionLocal
 from app.models.bgg_hot_game import BGGHotGame
 from app.models.bgg_hot_person import BGGHotPerson
@@ -12,7 +12,7 @@ from app.utils.logging import log_info, log_success
 
 async def update_hot_games():
     log_info("🔄 Aktualizacja listy hot games z BGG")
-    games_data = await fetch_hot_games()
+    games_data = await fetch_bgg_hotness_games()
     async with AsyncSessionLocal() as session:
         await clear_hot_games(session)
         session.add_all([BGGHotGame(**game) for game in games_data])
@@ -33,7 +33,7 @@ async def clear_hot_games(session: AsyncSession):
 
 async def update_hot_persons():
     log_info("🔄 Aktualizacja listy hot persons z BGG")
-    persons_data = await fetch_hot_persons()
+    persons_data = await fetch_bgg_hot_persons()
     async with AsyncSessionLocal() as session:
         await clear_hot_persons(session)
         session.add_all([BGGHotPerson(**person) for person in persons_data])

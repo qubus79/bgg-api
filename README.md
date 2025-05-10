@@ -1,104 +1,118 @@
-# README.md
+# 🎲 BGG API – BoardGameGeek Collection & Hotness API
 
-## FastAPI Backend — BGG Collection
+FastAPI backend do zbierania, przechowywania i udostępniania danych z BoardGameGeek, w tym:
+- Głównej kolekcji użytkownika (gry)
+- Akcesoriów z BGG
+- Gier i osób z listy Hotness (najpopularniejszych w danym momencie)
 
-Backend do pobierania kolekcji gier z BoardGameGeek i zapisywania ich do bazy PostgreSQL.
-
----
-
-## 🔧 Lokalne uruchomienie (Docker)
-
-### 1. Skonfiguruj `.env`
-
-Utwórz plik `.env` na bazie `.env.example` i podaj dane do lokalnej bazy:
-
-```
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/bgg
-```
-
-### 2. Uruchom Dockera
-
-```
-docker-compose up --build
-```
-
-### 3. API będzie dostępne pod:
-
-- http://localhost:8000/health
-- http://localhost:8000/stats
-- http://localhost:8000/bgg_collection
-- POST http://localhost:8000/update_bgg_collection
+Dane przechowywane są w bazie PostgreSQL i mogą być wykorzystywane przez aplikacje mobilne, webowe lub inne integracje (np. Notion).
 
 ---
 
-## ☁️ Deployment na Railway
+## 📦 Funkcjonalności
 
-### 1. Utwórz projekt Railway
+- ✅ Import gier z kolekcji BGG (w tym statystyki, mechaniki, czas gry, itd.)
+- ✅ Import akcesoriów z BGG
+- ✅ Import „Hotness” – osobno dla gier i osób (autorzy, ilustratorzy itd.)
+- ✅ Harmonogram (scheduler) aktualizacji danych (co 6h)
+- ✅ REST API z punktami `/health`, `/stats`, `/update`, `/` dla każdego zasobu
+- ✅ Gotowy do deploymentu na Railway, Render lub lokalnie via Docker
 
-- Wejdź na [https://railway.app](https://railway.app) i utwórz nowy projekt
-- Wybierz opcję "Deploy from GitHub repo"
+---
 
-### 2. Dodaj zmienne środowiskowe
-
-W zakładce **Variables**:
+## 🗂 Struktura projektu
 
 ```
-DATABASE_URL=postgresql+asyncpg://user:password@your-db-host:5432/bgg
-```
-
-Railway automatycznie przypisze host, port i hasło do bazy PostgreSQL jeśli dodasz usługę `PostgreSQL`.
-
-### 3. Zmiana portu
-
-Railway używa portu środowiskowego, upewnij się, że w `main.py` masz:
-
-```python
-import os
-port = int(os.getenv("PORT", 8000))
-uvicorn.run(app, host="0.0.0.0", port=port)
+app/
+├── main.py                     # FastAPI app + routowanie
+├── database.py                # Konfiguracja bazy danych
+├── models/                    # Modele SQLAlchemy (PostgreSQL)
+│   ├── bgg_game.py
+│   ├── bgg_accessory.py
+│   ├── bgg_hotness_game.py
+│   └── bgg_hotness_person.py
+├── schemas/                   # Schematy Pydantic (API)
+├── routes/                    # Endpointy API (FastAPI routers)
+│   ├── bgg_game.py
+│   ├── bgg_accessory.py
+│   └── bgg_hotness.py         # (gra + osoba w jednym)
+├── scraper/                   # Logika pobierania danych z BGG
+│   ├── bgg_game.py
+│   ├── bgg_accessory.py
+│   └── bgg_hotness.py
+├── tasks/                     # Harmonogramy aktualizacji danych
+├── utils/                     # Logowanie, helpery
+└── config.py                  # Ustawienia środowiska
 ```
 
 ---
 
-## 🌐 Endpointy
+## 🚀 Jak uruchomić lokalnie?
 
-| Endpoint | Metoda | Opis |
-|----------|--------|------|
-|`/health`|GET|Sprawdzenie czy API działa|
-|`/stats`|GET|Liczba gier w kolekcji + ostatni update|
-|`/bgg_collection`|GET|Lista gier z kolekcji BGG z bazy|
-|`/update_bgg_collection`|POST|Ręczne odpalenie scrapera i update bazy|
+### 1. Wymagania
+- Python 3.11+
+- PostgreSQL
+- (opcjonalnie) Docker + Docker Compose
+
+### 2. Instalacja
+
+```bash
+# Klonuj repo
+git clone https://github.com/twoj-uzytkownik/bgg-api.git
+cd bgg-api
+
+# Virtualenv
+python -m venv venv
+source venv/bin/activate
+
+# Instalacja zależności
+pip install -r requirements.txt
+```
+
+### 3. Skonfiguruj zmienne środowiskowe
+
+Utwórz `.env` w katalogu głównym i dodaj np.:
+
+```
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/games
+BGG_USERNAME=qubus
+```
+
+### 4. Uruchom lokalnie
+
+```bash
+uvicorn app.main:app --reload
+```
 
 ---
 
-## 🐘 docker-compose.yml (dla dev)
+## 🌐 Deployment na Railway
 
-```yaml
-version: '3.9'
+1. Zaloguj się do Railway: https://railway.app/
+2. Utwórz nowy projekt → Deploy from GitHub → wybierz repozytorium
+3. Ustaw zmienne środowiskowe:
+   - `DATABASE_URL`
+   - `BGG_USERNAME`
+4. Railway automatycznie zbuduje i uruchomi aplikację
 
-services:
-  db:
-    image: postgres:15
-    restart: always
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: bgg
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+---
 
-  api:
-    build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
-    depends_on:
-      - db
+## 🔗 Przykładowe endpointy
 
-volumes:
-  postgres_data:
-```
+- `GET /bgg_games/health`
+- `POST /bgg_games/update_bgg_collection`
+- `GET /bgg_accessories/stats`
+- `GET /bgg_hotness/games`
+- `GET /bgg_hotness/people`
+
+---
+
+## 🧠 Autorzy i wsparcie
+
+Projekt prywatny rozwijany przez [Paweł Nocznicki](mailto:pawel@nocznicki.pl) na potrzeby aplikacji do zarządzania kolekcją gier planszowych.
+
+---
+
+## 🛡 Licencja
+
+MIT License – możesz używać, kopiować, modyfikować i wykorzystywać we własnych projektach.
