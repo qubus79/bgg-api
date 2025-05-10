@@ -30,8 +30,8 @@ async def startup_event():
     log_info("✅ Application started and both schedulers initialized.")
 
 # Rejestracja routerów
-app.include_router(bgg_game.router, prefix="/bgg_games", tags=["BGG Games"])
-app.include_router(bgg_accessory.router, prefix="/bgg_accessories", tags=["BGG Accessories"])
+app.include_router(bgg_game.router)
+app.include_router(bgg_accessory.router)
 
 # Główny endpoint z podsumowaniem
 @app.get("/")

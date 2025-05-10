@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from app.tasks import bgg_game
 
-router = APIRouter()
+router = APIRouter(prefix="/bgg_games", tags=["BGG Games"])
 
 @router.get("/health")
 async def health():
