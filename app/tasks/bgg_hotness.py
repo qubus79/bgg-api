@@ -13,25 +13,14 @@ from apscheduler.triggers.interval import IntervalTrigger
 async def update_hot_games():
     log_info("🔄 Aktualizacja listy hot games z BGG")
     games_data = await fetch_bgg_hotness_games()
-    updated, added = 0, 0
 
     async with AsyncSessionLocal() as session:
-        for game_data in games_data:
-            result = await session.execute(select(BGGHotGame).where(BGGHotGame.bgg_id == game_data["bgg_id"]))
-            existing = result.scalars().first()
-
-            if existing:
-                for field, value in game_data.items():
-                    setattr(existing, field, value)
-                updated += 1
-            else:
-                session.add(BGGHotGame(**game_data))
-                added += 1
-
+        await clear_hot_games(session)  # 🚮 usuń stare wpisy
+        session.add_all([BGGHotGame(**game) for game in games_data])
         await session.commit()
 
-    log_success(f"✅ Hotness games zapisane: {added} nowych, {updated} zaktualizowanych")
-    return {"status": "done", "added": added, "updated": updated}
+    log_success(f"✅ Hotness games zapisane: {len(games_data)} gier")
+    return {"status": "done", "total": len(games_data)}
 
 
 async def get_hot_games():
@@ -64,25 +53,14 @@ async def get_hotness_game_stats():
 async def update_hot_persons():
     log_info("🔄 Aktualizacja listy hot persons z BGG")
     persons_data = await fetch_bgg_hotness_persons()
-    updated, added = 0, 0
 
     async with AsyncSessionLocal() as session:
-        for person_data in persons_data:
-            result = await session.execute(select(BGGHotPerson).where(BGGHotPerson.bgg_id == person_data["bgg_id"]))
-            existing = result.scalars().first()
-
-            if existing:
-                for field, value in person_data.items():
-                    setattr(existing, field, value)
-                updated += 1
-            else:
-                session.add(BGGHotPerson(**person_data))
-                added += 1
-
+        await clear_hot_persons(session)  # 🚮 usuń stare wpisy
+        session.add_all([BGGHotPerson(**person) for person in persons_data])
         await session.commit()
 
-    log_success(f"✅ Hotness persons zapisane: {added} nowych, {updated} zaktualizowanych")
-    return {"status": "done", "added": added, "updated": updated}
+    log_success(f"✅ Hotness persons zapisane: {len(persons_data)} osób")
+    return {"status": "done", "total": len(persons_data)}
 
 
 async def get_hot_persons():
