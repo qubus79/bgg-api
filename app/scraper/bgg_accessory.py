@@ -1,15 +1,44 @@
 # app/scraper/bgg_accessory_scraper.py
 
+import os
 import httpx
 import xml.etree.ElementTree as ET
 from typing import Dict, Any
 import asyncio
-import time
 from app.database import AsyncSessionLocal
 from app.models.bgg_accessory import BGGAccessory
 from sqlalchemy import select
 from app.utils.logging import log_info, log_success
 
+# --- Konfiguracja HTTP / BGG ---
+BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
+BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")
+USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
+
+def _default_headers() -> Dict[str, str]:
+    headers = {"User-Agent": USER_AGENT}
+    if BGG_API_TOKEN:
+        headers["Authorization"] = f"Bearer {BGG_API_TOKEN}"
+    return headers
+
+def _make_client() -> httpx.AsyncClient:
+    # Automatyczne HTTP/2 jeśli dostępny pakiet h2; inaczej spadek do HTTP/1.1
+    want_http2 = os.getenv("HTTP2", "1") == "1"
+    try:
+        if want_http2:
+            import h2  # noqa: F401
+        http2_flag = want_http2
+    except ImportError:
+        http2_flag = False
+
+    return httpx.AsyncClient(
+        headers=_default_headers(),
+        follow_redirects=True,
+        http2=http2_flag,
+        timeout=httpx.Timeout(30.0),
+    )
+
+# --- Helpers ---
 def get_bool(attr: str | None) -> bool:
     return attr == "1"
 
@@ -25,16 +54,67 @@ def get_int(attr: str | None) -> int:
     except (TypeError, ValueError):
         return 0
 
+# --- Pobieranie z retry/backoff ---
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
+    """
+    Pobiera XML z obsługą:
+    - 202 Accepted (kolejka) + Retry-After,
+    - 429 Too Many Requests + Retry-After,
+    - 5xx z backoffem,
+    - 401/403 (błąd autoryzacji).
+    """
     log_info(f"➡️ Fetching XML from: {url}")
-    resp = await client.get(url)
-    while resp.status_code == 202:
-        log_info("⏳ Waiting for BGG API to be ready...")
-        await asyncio.sleep(2)
-        resp = await client.get(url)
-    resp.raise_for_status()
-    return ET.fromstring(resp.text)
 
+    base_delay = 1.0
+    max_attempts = 12
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = await client.get(url)
+
+            if resp.status_code == 200:
+                return ET.fromstring(resp.text)
+
+            if resp.status_code == 202:
+                delay_hdr = resp.headers.get("Retry-After")
+                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
+                log_info(f"⏳ 202 Accepted — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code == 429:
+                delay_hdr = resp.headers.get("Retry-After")
+                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
+                log_info(f"🚦 429 Too Many Requests — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code in (500, 502, 503, 504):
+                sleep_s = base_delay * attempt
+                log_info(f"🛠 {resp.status_code} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"BGG auth error {resp.status_code}. "
+                    "Sprawdź BGG_API_TOKEN i czy aplikacja na BGG jest zatwierdzona."
+                )
+
+            resp.raise_for_status()
+
+        except Exception as e:
+            last_exc = e
+            sleep_s = base_delay * attempt
+            log_info(f"⚠️ Wyjątek {type(e).__name__}: {e} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+            await asyncio.sleep(sleep_s)
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Niepowodzenie pobierania z BGG bez konkretnego wyjątku.")
+
+# --- Parsowanie ---
 def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
     return {item.attrib['objectid']: item for item in root.findall("item")}
 
@@ -67,12 +147,14 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "publisher": publisher_str,
     }
 
+# --- Główna funkcja ---
 async def fetch_bgg_accessories(username: str) -> None:
     log_info("📅 Rozpoczynam pobieranie akcesorii BGG")
-    collection_url = f"https://boardgamegeek.com/xmlapi2/collection?username={username}&subtype=boardgameaccessory&stats=1"
-    thing_url = "https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1"
 
-    async with httpx.AsyncClient() as client:
+    collection_url = f"{BGG_XML_BASE}/collection?username={username}&subtype=boardgameaccessory&stats=1"
+    thing_url_tmpl = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
+
+    async with _make_client() as client:
         collection_root = await fetch_xml(client, collection_url)
         collection_data = parse_collection_data(collection_root)
 
@@ -83,7 +165,7 @@ async def fetch_bgg_accessories(username: str) -> None:
             title = basic_data.get("name") or f"ID={bgg_id}"
             log_info(f"[{idx}/{len(collection_data)}] 🧰 Przetwarzam akcesorium: {title} (ID={bgg_id})")
 
-            detail_url = thing_url.format(bgg_id=bgg_id)
+            detail_url = thing_url_tmpl.format(bgg_id=bgg_id)
             detail_root = await fetch_xml(client, detail_url)
             detail_item = detail_root.find("item")
             if not detail_item:
@@ -111,10 +193,13 @@ async def fetch_bgg_accessories(username: str) -> None:
 
                 await session.commit()
 
-            time.sleep(2)
+            # krótka pauza grzecznościowa między /thing
+            pause_time = 1.5
+            log_info(f"⏳ Pauza {pause_time} s by uniknąć limitów BGG")
+            await asyncio.sleep(pause_time)
 
     # Usuwanie nieistniejących
-    current_ids = set(int(bgg_id) for bgg_id in collection_data.keys())
+    current_ids = {int(bgg_id) for bgg_id in collection_data.keys()}
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(BGGAccessory.bgg_id))
         all_db_ids = set(result.scalars().all())

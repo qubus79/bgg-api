@@ -1,46 +1,109 @@
 # app/scraper/bgg_hotness.py
 
+import os
 import asyncio
 import httpx
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Dict, Any
-from app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal  # pozostawione jeśli kiedyś zapiszesz do DB z tego modułu
 from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
-from sqlalchemy import select
+from sqlalchemy import select  # jw.
 from app.utils.logging import log_info, log_success, log_error, log_warning
-import time
 
-HOT_GAMES_URL = "https://boardgamegeek.com/xmlapi2/hot?type=boardgame"
-HOT_PERSONS_URL = "https://boardgamegeek.com/xmlapi2/hot?type=boardgameperson"
-THING_URL = "https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1"
+# --- Konfiguracja / BGG ---
+BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
+HOT_GAMES_URL = f"{BGG_XML_BASE}/hot?type=boardgame"
+HOT_PERSONS_URL = f"{BGG_XML_BASE}/hot?type=boardgameperson"
+THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
+
+BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")
+USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
+
+def _default_headers() -> Dict[str, str]:
+    headers = {"User-Agent": USER_AGENT}
+    if BGG_API_TOKEN:
+        headers["Authorization"] = f"Bearer {BGG_API_TOKEN}"
+    return headers
+
+def _make_client() -> httpx.AsyncClient:
+    """HTTP/2 włączone automatycznie, jeśli pakiet h2 jest dostępny (lub ustawisz HTTP2=1 i masz h2)."""
+    want_http2 = os.getenv("HTTP2", "1") == "1"
+    try:
+        if want_http2:
+            import h2  # noqa: F401
+        http2_flag = want_http2
+    except ImportError:
+        http2_flag = False
+
+    return httpx.AsyncClient(
+        headers=_default_headers(),
+        follow_redirects=True,
+        http2=http2_flag,
+        timeout=httpx.Timeout(30.0),
+    )
 
 # ----------------------------
 # 🌐 XML Fetching with Retry
 # ----------------------------
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
+    """
+    Pobiera XML z obsługą:
+    - 202 Accepted + Retry-After (kolejka na BGG),
+    - 429 Too Many Requests + Retry-After,
+    - 5xx z backoffem,
+    - 401/403 (błąd autoryzacji).
+    """
     log_info(f"➡️ Fetching XML from: {url}")
-    resp = await client.get(url)
-    while resp.status_code == 202:
-        log_info("⏳ Czekam na przetworzenie danych przez BGG...")
-        await asyncio.sleep(2)
-        resp = await client.get(url)
-    resp.raise_for_status()
-    return ET.fromstring(resp.text)
 
-async def retry_with_backoff(fetch_func, retries=5, initial_delay=2, max_delay=60):
-    delay = initial_delay
-    for attempt in range(retries):
+    base_delay = 1.0
+    max_attempts = 12
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
         try:
-            return await fetch_func()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                log_warning(f"🔁 Too Many Requests (429). Retry {attempt+1}/{retries} after {delay}s...")
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, max_delay)
-            else:
-                raise
-    raise RuntimeError("❌ Exceeded maximum retry attempts due to repeated 429 errors")
+            resp = await client.get(url)
+
+            if resp.status_code == 200:
+                return ET.fromstring(resp.text)
+
+            if resp.status_code == 202:
+                delay_hdr = resp.headers.get("Retry-After")
+                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
+                log_info(f"⏳ 202 Accepted — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code == 429:
+                delay_hdr = resp.headers.get("Retry-After")
+                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
+                log_warning(f"🚦 429 Too Many Requests — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code in (500, 502, 503, 504):
+                sleep_s = base_delay * attempt
+                log_warning(f"🛠 {resp.status_code} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_s)
+                continue
+
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"BGG auth error {resp.status_code}. "
+                    "Sprawdź BGG_API_TOKEN i czy aplikacja na BGG jest zatwierdzona."
+                )
+
+            resp.raise_for_status()
+
+        except Exception as e:
+            last_exc = e
+            sleep_s = base_delay * attempt
+            log_warning(f"⚠️ {type(e).__name__}: {e} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+            await asyncio.sleep(sleep_s)
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Niepowodzenie pobierania z BGG bez konkretnego wyjątku.")
 
 # ----------------------------
 # 🟣 HOTNESS GAMES
@@ -90,24 +153,25 @@ def extract_hot_game_details(item: ET.Element) -> Dict[str, Any]:
 
 async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
     log_info("🎲 Rozpoczynam pobieranie Hotness Games z BGG")
+    games: List[Dict[str, Any]] = []
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_client() as client:
             root = await fetch_xml(client, HOT_GAMES_URL)
             items = root.findall("item")
-            games = []
 
             for idx, item in enumerate(items, start=1):
                 game = extract_hot_game(item)
                 bgg_id = game["bgg_id"]
-                detail_url = THING_URL.format(bgg_id=bgg_id)
+                detail_url = THING_URL_TMPL.format(bgg_id=bgg_id)
                 log_info(f"[{idx}/{len(items)}] 🔥 Rank {game['rank']} - {game['name']}")
-                detail_root = await retry_with_backoff(lambda: fetch_xml(client, detail_url))
+                detail_root = await fetch_xml(client, detail_url)
                 detail_item = detail_root.find("item")
                 if detail_item:
-                    details = extract_hot_game_details(detail_item)
-                    game.update(details)
+                    game.update(extract_hot_game_details(detail_item))
                 games.append(game)
-                time.sleep(2)
+
+                # grzecznościowa pauza między /thing
+                await asyncio.sleep(1.5)
 
             log_success(f"🎲 Zakończono przetwarzanie {len(games)} hotness gier")
             return games
@@ -135,11 +199,11 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
 
 async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
     log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
+    persons: List[Dict[str, Any]] = []
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_client() as client:
             root = await fetch_xml(client, HOT_PERSONS_URL)
             items = root.findall("item")
-            persons = []
 
             for idx, item in enumerate(items, start=1):
                 person = extract_hot_person(item)
@@ -156,4 +220,3 @@ async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
     except Exception as e:
         log_error(f"❌ Unexpected error while parsing hot persons: {e}")
     return []
-
