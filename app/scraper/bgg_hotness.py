@@ -137,7 +137,7 @@ def extract_hot_game_details(item: ET.Element) -> Dict[str, Any]:
     return {
         "original_title": name,
         "description": item.findtext("description"),
-        "image": item.find("image").attrib.get("value", None) if item.find("image") is not None else None,
+        "image": (item.find("image").text.strip() if item.find("image") is not None and item.find("image").text else None),
         "mechanics": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamemechanic"],
         "designers": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamedesigner"],
         "artists": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgameartist"],
@@ -168,6 +168,8 @@ async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
                 detail_item = detail_root.find("item")
                 if detail_item:
                     game.update(extract_hot_game_details(detail_item))
+                    # DEBUG: podgląd, jaka wartość trafia do pola image
+                    log_info(f"🖼 Hotness image debug — bgg_id={bgg_id}, name='{game.get('name')}', image='{game.get('image')}'")
                 games.append(game)
 
                 # grzecznościowa pauza między /thing
