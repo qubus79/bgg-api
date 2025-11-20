@@ -168,8 +168,6 @@ async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
                 detail_item = detail_root.find("item")
                 if detail_item:
                     game.update(extract_hot_game_details(detail_item))
-                    # DEBUG: podgląd, jaka wartość trafia do pola image
-                    log_info(f"🖼 Hotness image debug — bgg_id={bgg_id}, name='{game.get('name')}', image='{game.get('image')}'")
                 games.append(game)
 
                 # grzecznościowa pauza między /thing
