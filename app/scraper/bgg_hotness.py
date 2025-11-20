@@ -114,7 +114,6 @@ def extract_hot_game(item: ET.Element) -> Dict[str, Any]:
         "rank": int(item.attrib.get("rank", 0)),
         "name": item.find("name").attrib.get("value", "") if item.find("name") is not None else "",
         "year_published": int(item.find("yearpublished").attrib.get("value", 0)) if item.find("yearpublished") is not None else None,
-        "image": item.find("thumbnail").attrib.get("value", None) if item.find("thumbnail") is not None else None,
         "bgg_url": f"https://boardgamegeek.com/boardgame/{item.attrib['id']}",
         "last_modified": datetime.utcnow(),
     }
@@ -138,6 +137,7 @@ def extract_hot_game_details(item: ET.Element) -> Dict[str, Any]:
     return {
         "original_title": name,
         "description": item.findtext("description"),
+        "image": item.find("image").attrib.get("value", None) if item.find("image") is not None else None,
         "mechanics": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamemechanic"],
         "designers": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamedesigner"],
         "artists": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgameartist"],
