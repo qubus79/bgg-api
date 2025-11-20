@@ -128,6 +128,13 @@ def extract_hot_game_details(item: ET.Element) -> Dict[str, Any]:
         except Exception:
             pass
 
+    bgg_rating = (
+        float(stats_el.find("average").attrib.get("value"))
+        if stats_el is not None and stats_el.find("average") is not None
+        else None
+    )
+    log_info(f"[DETAIL DEBUG] bgg_id={item.attrib.get('id')} image={(item.find('image').text.strip() if item.find('image') is not None and item.find('image').text else None)} rating={bgg_rating}")
+
     name = None
     for name_el in item.findall("name"):
         if name_el.attrib.get("type") == "primary":
@@ -149,6 +156,7 @@ def extract_hot_game_details(item: ET.Element) -> Dict[str, Any]:
         "min_age": int(item.find("minage").attrib.get("value", 0)) if item.find("minage") is not None else None,
         "type": item.attrib.get("type", None),
         "weight": average_weight,
+        "bgg_rating": bgg_rating,
     }
 
 async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:

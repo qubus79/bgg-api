@@ -31,6 +31,8 @@ class BGGHotGame(Base):
     artists = Column(JSONB, nullable=True)
     type = Column(String, nullable=True)
 
+    bgg_rating = Column(Float, nullable=True)
+
     last_modified = Column(DateTime, default=datetime.utcnow)
 
 

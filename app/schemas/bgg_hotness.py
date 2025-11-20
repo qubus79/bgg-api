@@ -25,7 +25,8 @@ class BGGHotGameBase(BaseModel):
     min_age: Optional[int] = None
     type: Optional[str] = None
     weight: Optional[float] = None
-    average_rating: Optional[float] = None
+    # average_rating: Optional[float] = None
+    bgg_rating: Optional[float] = None
     bgg_rank: Optional[int] = None
     bgg_link: Optional[str] = None  # ← link generowany na podstawie bgg_id
 
