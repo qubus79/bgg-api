@@ -21,9 +21,9 @@ async def init_bgg_db():
 
 
 async def setup_scheduler():
-    log_info("Scheduler started. Updating BGG collection every 6 hours.")
+    log_info("Scheduler started. Updating BGG collection every 2 hours.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(update_bgg_collection, IntervalTrigger(hours=6), id="update_bgg_collection_job", replace_existing=True)
+    scheduler.add_job(update_bgg_collection, IntervalTrigger(hours=2), id="update_bgg_collection_job", replace_existing=True)
     scheduler.start()
 
 
