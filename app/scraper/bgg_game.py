@@ -196,16 +196,16 @@ def normalize_purchase_currency(pp_currency: Optional[str], private_comment: Opt
     return "PLN", "default_pln"
 
 
-def _filter_to_model_fields(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep only keys that exist as attributes on the SQLAlchemy model.
+# def _filter_to_model_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+#     """Keep only keys that exist as attributes on the SQLAlchemy model.
 
-    This makes scraper changes safe even before DB/model migrations land.
-    """
-    allowed = {}
-    for k, v in data.items():
-        if hasattr(BGGGame, k):
-            allowed[k] = v
-    return allowed
+#     This makes scraper changes safe even before DB/model migrations land.
+#     """
+#     allowed = {}
+#     for k, v in data.items():
+#         if hasattr(BGGGame, k):
+#             allowed[k] = v
+#     return allowed
 
 async def fetch_private_collection_item(
     client: httpx.AsyncClient,
@@ -327,7 +327,9 @@ async def fetch_bgg_collection(username: str) -> None:
             }
 
             # Keep scraper safe even before DB/model migrations add the new fields
-            full_data_db = _filter_to_model_fields(full_data)
+            # full_data_db = _filter_to_model_fields(full_data)
+            # Scraper with working migration to DB of private data
+            full_data_db = full_data
 
             async with AsyncSessionLocal() as session:
                 result = await session.execute(select(BGGGame).where(BGGGame.bgg_id == int(bgg_id)))
