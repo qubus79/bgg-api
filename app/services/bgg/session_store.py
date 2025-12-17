@@ -1,7 +1,10 @@
 import os
 import json
 import time
+import logging
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class InMemorySessionStore:
@@ -52,16 +55,36 @@ async def build_session_store():
     """
     If REDIS_URL is set and redis is available, use Redis.
     Otherwise, fall back to in-memory.
+
+    Logs which backend is used and why.
     """
     redis_url = os.getenv("REDIS_URL")
+
     if redis_url:
         try:
             import redis.asyncio as redis  # requires redis>=4
 
             client = redis.from_url(redis_url, decode_responses=True)
-            return RedisSessionStore(client, key="bgg:session:cookies")
-        except Exception:
-            # Redis configured but not available => fallback
-            pass
 
+            # Try a cheap connectivity check so we can explain fallback clearly
+            try:
+                await client.ping()
+            except Exception as e:
+                logger.warning(
+                    "Redis configured (REDIS_URL set) but ping failed; falling back to in-memory (%s)",
+                    e.__class__.__name__,
+                )
+                return InMemorySessionStore()
+
+            logger.info("Session store backend: Redis")
+            return RedisSessionStore(client, key="bgg:session:cookies")
+
+        except Exception as e:
+            logger.warning(
+                "Redis configured (REDIS_URL set) but redis client unavailable; falling back to in-memory (%s)",
+                e.__class__.__name__,
+            )
+            return InMemorySessionStore()
+
+    logger.info("Session store backend: In-memory (REDIS_URL not set)")
     return InMemorySessionStore()

@@ -1,9 +1,13 @@
 import os
+import logging
 from typing import Any, Dict, Optional
 
 import httpx
 
 from app.services.bgg.session_store import build_session_store
+
+
+logger = logging.getLogger(__name__)
 
 
 class BGGAuthSessionManager:
@@ -33,6 +37,7 @@ class BGGAuthSessionManager:
     async def invalidate(self) -> None:
         store = await self._get_store()
         await store.delete()
+        logger.info("BGG session cache: INVALIDATE")
 
     async def ensure_session(self, client: httpx.AsyncClient) -> None:
         """
@@ -41,14 +46,17 @@ class BGGAuthSessionManager:
         store = await self._get_store()
         cached = await store.get()
         if cached:
+            logger.info("BGG session cache: HIT")
             # Load cookies into client's jar
             for k, v in cached.items():
                 if v is not None:
                     client.cookies.set(k, v)
             return
 
-        # No cached cookies => login
+        logger.info("BGG session cache: MISS")
+        logger.info("BGG login: starting")
         await self._login_and_cache(client)
+        logger.info("BGG login: success")
 
     async def _login_and_cache(self, client: httpx.AsyncClient) -> None:
         if not self._username or not self._password:
