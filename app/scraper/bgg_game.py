@@ -1,16 +1,24 @@
 import os
+import re
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
 from sqlalchemy import select
 from app.utils.logging import log_info, log_success
 
+# New: BGG private collection data requires an authenticated session (cookies)
+from app.services.bgg.auth_session import BGGAuthSessionManager
+
 BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
 BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")  # ustaw w .env / docker-compose
 USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
+
+# Private JSON collections endpoint (requires login cookies)
+BGG_PRIVATE_BASE = "https://boardgamegeek.com"
+BGG_PRIVATE_USER_ID = int(os.getenv("BGG_PRIVATE_USER_ID", "2382533"))
 
 def _default_headers() -> Dict[str, str]:
     headers = {"User-Agent": USER_AGENT}
@@ -152,6 +160,122 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "weight": average_weight,
     }
 
+# -----------------------------
+# Private purchase data helpers
+# -----------------------------
+
+_CURRENCY_HINT_RE = re.compile(r"Currency:\s*([A-Z]{3})")
+
+
+def normalize_purchase_currency(pp_currency: Optional[str], private_comment: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return (currency_code, source) according to the rules:
+
+    - pp_currency in {USD, CAD, AUD, YEN, GPB/GBP, EUR} maps to currency codes (YEN->JPY, GPB->GBP).
+    - If price is present but pp_currency is null, default PLN unless privatecomment contains 'Currency: XXX'.
+
+    NOTE: This function returns only currency and source. The caller decides whether a price is present.
+    """
+
+    if pp_currency:
+        v = pp_currency.strip().upper()
+        if v == "YEN":
+            return "JPY", "pp_currency"
+        if v in {"USD", "CAD", "AUD", "EUR", "GBP"}:
+            return v, "pp_currency"
+        # Unknown/other: keep as-is but mark source
+        return v, "pp_currency"
+
+    # No pp_currency — allow override from private comment
+    if private_comment:
+        m = _CURRENCY_HINT_RE.search(private_comment)
+        if m:
+            return m.group(1).upper(), "privatecomment"
+
+    # Caller may only want PLN default when pricepaid exists; still return PLN + source for convenience.
+    return "PLN", "default_pln"
+
+
+def _filter_to_model_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only keys that exist as attributes on the SQLAlchemy model.
+
+    This makes scraper changes safe even before DB/model migrations land.
+    """
+    allowed = {}
+    for k, v in data.items():
+        if hasattr(BGGGame, k):
+            allowed[k] = v
+    return allowed
+
+async def fetch_private_collection_item(
+    client: httpx.AsyncClient,
+    auth: BGGAuthSessionManager,
+    bgg_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Fetch private collection JSON for a single game.
+
+    Requires a valid logged-in BGG session (cookies). Uses a single automatic re-login on 401/403.
+    """
+
+    url = f"{BGG_PRIVATE_BASE}/api/collections?objectid={bgg_id}&objecttype=thing&userid={BGG_PRIVATE_USER_ID}"
+
+    # Ensure cookies are present on this client
+    await auth.ensure_session(client)
+
+    resp = await client.get(url)
+
+    # If auth expired, retry once after re-login
+    if resp.status_code in (401, 403):
+        log_info(f"🔐 Private collections returned {resp.status_code} for {bgg_id} — re-login and retry once")
+        await auth.invalidate()
+        await auth.ensure_session(client)
+        resp = await client.get(url)
+
+    if resp.status_code != 200:
+        log_info(f"⚠️ Private collections HTTP {resp.status_code} for {bgg_id} — skipping private fields")
+        return None
+
+    try:
+        payload = resp.json()
+    except Exception as e:
+        log_info(f"⚠️ Private collections JSON parse error for {bgg_id}: {e}")
+        return None
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not items or not isinstance(items, list):
+        return None
+
+    item = items[0] if items else None
+    if not isinstance(item, dict):
+        return None
+
+    pp_currency = item.get("pp_currency")
+    pricepaid = item.get("pricepaid")
+    quantity = item.get("quantity")
+    acquisitiondate = item.get("acquisitiondate")
+    acquiredfrom = item.get("acquiredfrom")
+    privatecomment = item.get("privatecomment")
+
+    # Currency normalization rules
+    purchase_currency = None
+    purchase_currency_source = None
+
+    if pricepaid is not None:
+        purchase_currency, purchase_currency_source = normalize_purchase_currency(pp_currency, privatecomment)
+    else:
+        # Keep currency null if there is no price (unless BGG provides explicit pp_currency)
+        if pp_currency:
+            purchase_currency, purchase_currency_source = normalize_purchase_currency(pp_currency, privatecomment)
+
+    return {
+        "purchase_currency": purchase_currency,
+        "purchase_currency_source": purchase_currency_source,
+        "purchase_price_paid": pricepaid,
+        "purchase_quantity": quantity,
+        "purchase_acquisition_date": acquisitiondate,
+        "purchase_acquired_from": acquiredfrom,
+        "purchase_private_comment": privatecomment,
+    }
+
 async def fetch_bgg_collection(username: str) -> None:
     log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
 
@@ -159,6 +283,7 @@ async def fetch_bgg_collection(username: str) -> None:
     thing_url_tmpl = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
 
     async with _make_client() as client:
+        auth = BGGAuthSessionManager()
         collection_root = await fetch_xml(client, collection_url)
         collection_data = parse_collection_data(collection_root)
 
@@ -177,22 +302,33 @@ async def fetch_bgg_collection(username: str) -> None:
                 continue
 
             detailed_data = extract_details(detail_item)
+
+            private_data = await fetch_private_collection_item(client, auth, int(bgg_id))
+            if private_data:
+                log_info("🔒 Private purchase fields: available")
+            else:
+                log_info("🔒 Private purchase fields: not available")
+
             full_data = {
                 "bgg_id": int(bgg_id),
                 **basic_data,
                 **detailed_data,
+                **(private_data or {}),
             }
+
+            # Keep scraper safe even before DB/model migrations add the new fields
+            full_data_db = _filter_to_model_fields(full_data)
 
             async with AsyncSessionLocal() as session:
                 result = await session.execute(select(BGGGame).where(BGGGame.bgg_id == int(bgg_id)))
                 existing = result.scalars().first()
 
                 if existing:
-                    for field, value in full_data.items():
+                    for field, value in full_data_db.items():
                         setattr(existing, field, value)
                     log_info(f"♻️ Zaktualizowano dane gry: {title}")
                 else:
-                    session.add(BGGGame(**full_data))
+                    session.add(BGGGame(**full_data_db))
                     log_info(f"➕ Dodano nową grę: {title}")
 
                 await session.commit()

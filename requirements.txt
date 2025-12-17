@@ -13,3 +13,6 @@ beautifulsoup4
 lxml
 
 colorama
+
+# Optional (enables Redis-backed session/cache; code should fall back to in-memory if REDIS_URL is not set)
+redis>=4.5
