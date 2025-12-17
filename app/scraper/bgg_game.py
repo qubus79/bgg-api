@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import datetime
 import httpx
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, Optional
@@ -251,7 +252,16 @@ async def fetch_private_collection_item(
     pp_currency = item.get("pp_currency")
     pricepaid = item.get("pricepaid")
     quantity = item.get("quantity")
-    acquisitiondate = item.get("acquisitiondate")
+    # BGG usually returns acquisitiondate as YYYY-MM-DD
+    raw_acquisitiondate = item.get("acquisitiondate")
+    acquisitiondate = None
+    if raw_acquisitiondate:
+        try:
+            acquisitiondate = datetime.strptime(str(raw_acquisitiondate), "%Y-%m-%d")
+        except Exception:
+            # If format is unexpected, keep it null (do not break the sync)
+            acquisitiondate = None
+
     acquiredfrom = item.get("acquiredfrom")
     privatecomment = item.get("privatecomment")
 

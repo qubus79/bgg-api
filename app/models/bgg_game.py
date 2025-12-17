@@ -44,3 +44,13 @@ class BGGGame(Base):
     artists = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=False), server_default=func.now())
+
+    # --- Private purchase / acquisition data (from BGG private collection API) ---
+    purchase_price_paid = Column(Float, nullable=True)
+    purchase_currency = Column(String, nullable=True)
+    purchase_currency_source = Column(String, nullable=True)
+
+    purchase_quantity = Column(Integer, nullable=True)
+    purchase_acquisition_date = Column(DateTime, nullable=True)
+    purchase_acquired_from = Column(String, nullable=True)
+    purchase_private_comment = Column(Text, nullable=True)
