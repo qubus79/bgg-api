@@ -9,6 +9,7 @@ from app.database import engine, Base, get_db
 from app.routes.bgg_game import router as games_router
 from app.routes.bgg_accessory import router as accessories_router
 from app.routes.bgg_hotness import router as hotness_router
+from app.routes.bgg_plays import router as plays_router
 from app.models.bgg_game import BGGGame
 from app.models.bgg_accessory import BGGAccessory
 from app.models.bgg_hotness import BGGHotGame
@@ -16,6 +17,7 @@ from app.models.bgg_hotness import BGGHotPerson
 from app.tasks.bgg_game import setup_scheduler
 from app.tasks.bgg_accessory import setup_accessory_scheduler
 from app.tasks.bgg_hotness import setup_hotness_scheduler
+from app.tasks.bgg_plays import setup_plays_scheduler
 from app.utils.logging import log_info
 
 app = FastAPI()
@@ -32,12 +34,14 @@ async def startup_event():
     await setup_scheduler()
     await setup_accessory_scheduler()
     await setup_hotness_scheduler()
+    await setup_plays_scheduler()
     log_info("✅ Application started and all schedulers initialized.")
 
 # Rejestracja routerów
 app.include_router(games_router)
 app.include_router(accessories_router)
 app.include_router(hotness_router)
+app.include_router(plays_router)
 
 # Główny endpoint z podsumowaniem
 @app.get("/")
