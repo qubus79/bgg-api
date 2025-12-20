@@ -197,14 +197,17 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
     async with _make_client() as client:
         # 1) load current collection bgg_ids from DB
         async with AsyncSessionLocal() as session:
-            res = await session.execute(select(BGGGame.bgg_id).order_by(BGGGame.bgg_id.asc()))
-            bgg_ids = [row[0] for row in res.all() if row[0] is not None]
+            res = await session.execute(
+                select(BGGGame.bgg_id, BGGGame.title).order_by(BGGGame.bgg_id.asc())
+            )
+            games = [(row[0], row[1]) for row in res.all() if row[0] is not None]
 
-        games_total = len(bgg_ids)
+        games_total = len(games)
 
         # 2) iterate and fetch plays
-        for idx, bgg_id in enumerate(bgg_ids, start=1):
-            log_info(f"[{idx}/{games_total}] 🎲 Plays: pobieram dla gry bgg_id={bgg_id}")
+        for idx, (bgg_id, title) in enumerate(games, start=1):
+            game_label = title or f"bgg_id={bgg_id}"
+            log_info(f"[{idx}/{games_total}] 🎲 Plays: pobieram dla gry: {game_label}")
 
             try:
                 plays = await fetch_all_plays_for_game(client, auth, bgg_id=bgg_id, showcount=DEFAULT_SHOWCOUNT)
