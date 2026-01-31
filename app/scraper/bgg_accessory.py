@@ -24,10 +24,11 @@ BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
 BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")
 USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
 THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
-ACCESSORY_DETAIL_CONCURRENCY = int(os.getenv("BGG_ACCESSORY_DETAIL_CONCURRENCY", "2"))
+ACCESSORY_DETAIL_CONCURRENCY = int(os.getenv("BGG_ACCESSORY_DETAIL_CONCURRENCY", "1"))
 ACCESSORY_THING_PAUSE_SECONDS = float(os.getenv("BGG_ACCESSORY_THING_PAUSE_SECONDS", "1.5"))
 BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.3"))
 BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.2"))
+BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "1.5"))
 
 
 # =============================================================================
@@ -81,23 +82,22 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
                 return root
 
             if resp.status_code == 202:
-                delay_hdr = resp.headers.get("Retry-After")
-                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
-                log_info(f"⏳ 202 Accepted — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = float(resp.headers.get("Retry-After", base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR))
+                log_info(f"⏳ 202 Accepted — czekam {delay:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay)
                 continue
 
             if resp.status_code == 429:
-                delay_hdr = resp.headers.get("Retry-After")
-                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
-                log_info(f"🚦 429 Too Many Requests — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                jitter = random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
+                log_info(f"🚦 429 Too Many Requests — czekam {delay + jitter:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay + jitter)
                 continue
 
             if resp.status_code in (500, 502, 503, 504):
-                sleep_s = base_delay * attempt
-                log_info(f"🛠 {resp.status_code} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                log_info(f"🛠 {resp.status_code} — retry za {delay:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay)
                 continue
 
             if resp.status_code in (401, 403):

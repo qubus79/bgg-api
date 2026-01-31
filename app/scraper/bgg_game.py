@@ -1,31 +1,51 @@
 import os
+import random
 import re
 from datetime import datetime
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, cast
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
+from app.utils.model_helpers import apply_model_fields
 
 # New: BGG private collection data requires an authenticated session (cookies)
 from app.services.bgg.auth_session import BGGAuthSessionManager
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
 BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
 BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")  # ustaw w .env / docker-compose
 USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
 
-# Private JSON collections endpoint (requires login cookies)
 BGG_PRIVATE_BASE = "https://boardgamegeek.com"
 BGG_PRIVATE_USER_ID = int(os.getenv("BGG_PRIVATE_USER_ID", "2382533"))
+DETAIL_CONCURRENCY = int(os.getenv("BGG_DETAIL_CONCURRENCY", "2"))
+THING_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_THING_PAUSE_SECONDS", "1.5"))
+THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
+BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.3"))
+BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.2"))
+BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "1.5"))
+
+
+# =============================================================================
+# HTTP HELPERS
+# =============================================================================
 
 def _default_headers() -> Dict[str, str]:
     headers = {"User-Agent": USER_AGENT}
     if BGG_API_TOKEN:
         headers["Authorization"] = f"Bearer {BGG_API_TOKEN}"
     return headers
+
 
 def _make_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
@@ -34,6 +54,11 @@ def _make_client() -> httpx.AsyncClient:
         http2=True,
         timeout=httpx.Timeout(30.0),
     )
+
+
+# =============================================================================
+# RETRY / BACKOFF HANDLING
+# =============================================================================
 
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
     """
@@ -56,29 +81,30 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
 
             # Sukces
             if resp.status_code == 200:
-                return ET.fromstring(resp.text)
+                root = ET.fromstring(resp.text)
+                await asyncio.sleep(BGG_REQUEST_PAUSE_SECONDS + random.uniform(0, BGG_REQUEST_JITTER_SECONDS))
+                return root
 
             # 202 — zapytanie w kolejce
             if resp.status_code == 202:
-                delay_hdr = resp.headers.get("Retry-After")
-                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
-                log_info(f"⏳ 202 Accepted — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = float(resp.headers.get("Retry-After", base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR))
+                log_info(f"⏳ 202 Accepted — czekam {delay:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay)
                 continue
 
             # 429 — za dużo zapytań
             if resp.status_code == 429:
-                delay_hdr = resp.headers.get("Retry-After")
-                sleep_s = float(delay_hdr) if delay_hdr else base_delay * attempt
-                log_info(f"🚦 429 Too Many Requests — czekam {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                jitter = random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
+                log_info(f"🚦 429 Too Many Requests — czekam {delay + jitter:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay + jitter)
                 continue
 
             # 5xx — spróbuj ponownie z backoffem
             if resp.status_code in (500, 502, 503, 504):
-                sleep_s = base_delay * attempt
-                log_info(f"🛠 {resp.status_code} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(sleep_s)
+                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                log_info(f"🛠 {resp.status_code} — retry za {delay:.1f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(delay)
                 continue
 
             # 401/403 — token nie ustawiony/niepoprawny/niezatwierdzona aplikacja
@@ -102,32 +128,55 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
         raise last_exc
     raise RuntimeError("Niepowodzenie pobierania z BGG bez konkretnego wyjątku.")
 
+
+# =============================================================================
+# COLLECTION PARSING HELPERS
+# =============================================================================
+
 def parse_collection_data(root: ET.Element) -> Dict[str, ET.Element]:
     return {item.attrib['objectid']: item for item in root.findall("item")}
 
+
+def _element_value(element: Optional[ET.Element], attr: str = "value") -> Optional[str]:
+    if element is None:
+        return None
+    return element.attrib.get(attr)
+
+
+def _rating_value(element: Optional[ET.Element]) -> Optional[str]:
+    if element is None:
+        return None
+    value = element.attrib.get("value")
+    if value in (None, "N/A"):
+        return None
+    return value
+
+
 def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
+    status_el = item.find("status")
+    rating_el = item.find("stats/rating")
+    average_rating_el = item.find("stats/rating/average")
+    rank_el = item.find("stats/rating/ranks/rank")
+
     return {
         "title": item.findtext("name"),
-        "year_published": int(item.findtext("yearpublished") or 0),
+        "year_published": to_int(item.findtext("yearpublished")),
         "image": item.findtext("image"),
         "thumbnail": item.findtext("thumbnail"),
-        "num_plays": int(item.findtext("numplays") or 0),
-        "my_rating": (
-            float(rating.attrib.get("value"))
-            if (rating := item.find("stats/rating")) is not None and rating.attrib.get("value") not in [None, "N/A"]
-            else None
-        ),
-        "average_rating": float(item.find("stats/rating/average").attrib.get("value", 0)) if item.find("stats/rating/average") is not None else None,
-        "bgg_rank": int(item.find("stats/rating/ranks/rank").attrib.get("value")) if item.find("stats/rating/ranks/rank") is not None and item.find("stats/rating/ranks/rank").attrib.get("value").isdigit() else None,
-        "status_owned": item.find("status").attrib.get("own") == "1" if item.find("status") is not None else False,
-        "status_preordered": item.find("status").attrib.get("preordered") == "1" if item.find("status") is not None else False,
-        "status_wishlist": item.find("status").attrib.get("wishlist") == "1" if item.find("status") is not None else False,
-        "status_fortrade": item.find("status").attrib.get("fortrade") == "1" if item.find("status") is not None else False,
-        "status_prevowned": item.find("status").attrib.get("prevowned") == "1" if item.find("status") is not None else False,
-        "status_wanttoplay": item.find("status").attrib.get("wanttoplay") == "1" if item.find("status") is not None else False,
-        "status_wanttobuy": item.find("status").attrib.get("wanttobuy") == "1" if item.find("status") is not None else False,
-        "status_wishlist_priority": int(item.find("status").attrib.get("wishlistpriority") or 0) if item.find("status") is not None else None,
+        "num_plays": to_int(item.findtext("numplays")),
+        "my_rating": to_float(_rating_value(rating_el)),
+        "average_rating": to_float(_element_value(average_rating_el)),
+        "bgg_rank": to_int(_element_value(rank_el)),
+        "status_owned": bool(to_bool(_element_value(status_el, "own"))),
+        "status_preordered": bool(to_bool(_element_value(status_el, "preordered"))),
+        "status_wishlist": bool(to_bool(_element_value(status_el, "wishlist"))),
+        "status_fortrade": bool(to_bool(_element_value(status_el, "fortrade"))),
+        "status_prevowned": bool(to_bool(_element_value(status_el, "prevowned"))),
+        "status_wanttoplay": bool(to_bool(_element_value(status_el, "wanttoplay"))),
+        "status_wanttobuy": bool(to_bool(_element_value(status_el, "wanttobuy"))),
+        "status_wishlist_priority": to_int(_element_value(status_el, "wishlistpriority")),
     }
+
 
 def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
     name = None
@@ -141,29 +190,30 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
     average_weight = None
     if stats_el is not None and stats_el.find("averageweight") is not None:
         try:
-            average_weight = float(stats_el.find("averageweight").attrib.get("value"))
+            average_weight = to_float(_element_value(stats_el.find("averageweight")))
         except (ValueError, TypeError):
             average_weight = None
 
     return {
         "original_title": name,
         "description": detail_item.findtext("description"),
-        "mechanics": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamemechanic"],
-        "designers": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgamedesigner"],
-        "artists": [l.attrib["value"] for l in links if l.attrib.get("type") == "boardgameartist"],
-        "min_players": int(detail_item.find("minplayers").attrib.get("value", 0)) if detail_item.find("minplayers") is not None else None,
-        "max_players": int(detail_item.find("maxplayers").attrib.get("value", 0)) if detail_item.find("maxplayers") is not None else None,
-        "min_playtime": int(detail_item.find("minplaytime").attrib.get("value", 0)) if detail_item.find("minplaytime") is not None else None,
-        "max_playtime": int(detail_item.find("maxplaytime").attrib.get("value", 0)) if detail_item.find("maxplaytime") is not None else None,
-        "play_time": int(detail_item.find("playingtime").attrib.get("value", 0)) if detail_item.find("playingtime") is not None else None,
-        "min_age": int(detail_item.find("minage").attrib.get("value", 0)) if detail_item.find("minage") is not None else None,
+        "mechanics": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgamemechanic") if value],
+        "designers": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgamedesigner") if value],
+        "artists": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgameartist") if value],
+        "min_players": to_int(_element_value(detail_item.find("minplayers"))),
+        "max_players": to_int(_element_value(detail_item.find("maxplayers"))),
+        "min_playtime": to_int(_element_value(detail_item.find("minplaytime"))),
+        "max_playtime": to_int(_element_value(detail_item.find("maxplaytime"))),
+        "play_time": to_int(_element_value(detail_item.find("playingtime"))),
+        "min_age": to_int(_element_value(detail_item.find("minage"))),
         "type": detail_item.attrib.get("type", None),
         "weight": average_weight,
     }
 
-# -----------------------------
-# Private purchase data helpers
-# -----------------------------
+
+# =============================================================================
+# PRIVATE PURCHASE DATA HELPERS
+# =============================================================================
 
 _CURRENCY_HINT_RE = re.compile(r"Currency:\s*([A-Z]{3})")
 
@@ -195,17 +245,6 @@ def normalize_purchase_currency(pp_currency: Optional[str], private_comment: Opt
     # Caller may only want PLN default when pricepaid exists; still return PLN + source for convenience.
     return "PLN", "default_pln"
 
-
-# def _filter_to_model_fields(data: Dict[str, Any]) -> Dict[str, Any]:
-#     """Keep only keys that exist as attributes on the SQLAlchemy model.
-
-#     This makes scraper changes safe even before DB/model migrations land.
-#     """
-#     allowed = {}
-#     for k, v in data.items():
-#         if hasattr(BGGGame, k):
-#             allowed[k] = v
-#     return allowed
 
 async def fetch_private_collection_item(
     client: httpx.AsyncClient,
@@ -286,11 +325,108 @@ async def fetch_private_collection_item(
         "purchase_private_comment": privatecomment,
     }
 
+
+# =============================================================================
+# PAYLOAD BUILDERS
+# =============================================================================
+
+async def _build_game_payload(
+    client: httpx.AsyncClient,
+    auth: BGGAuthSessionManager,
+    sem: asyncio.Semaphore,
+    idx: int,
+    total: int,
+    bgg_id: str,
+    basic_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+
+    title = basic_data.get("title") or f"ID={bgg_id}"
+    detail_url = THING_URL_TMPL.format(bgg_id=bgg_id)
+
+    async with sem:
+        log_info(f"\n[{idx}/{total}] 🧩 Przetwarzam grę: {title} (ID={bgg_id})")
+        detail_root = await fetch_xml(client, detail_url)
+        detail_item = detail_root.find("item")
+        if not detail_item:
+            log_info(f"⚠️ Pominięto grę {title} (ID={bgg_id}) - brak danych szczegółowych")
+            return None
+
+        detailed_data = extract_details(detail_item)
+
+        private_data = await fetch_private_collection_item(client, auth, int(bgg_id))
+        if private_data:
+            log_info("🔒 Private purchase fields: available")
+        else:
+            log_info("🔒 Private purchase fields: not available")
+
+        full_data = {
+            "bgg_id": int(bgg_id),
+            **basic_data,
+            **detailed_data,
+            **(private_data or {}),
+        }
+
+    await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
+    return full_data
+
+
+# =============================================================================
+# DATA PERSISTENCE
+# =============================================================================
+
+async def _persist_games(
+    games_data: List[Dict[str, Any]],
+    collection_ids: set[int],
+) -> tuple[int, int, int]:
+
+    inserted = 0
+    updated = 0
+    deleted = 0
+
+    session = AsyncSessionLocal()
+    session = cast(AsyncSession, session)
+    try:
+        new_ids = {game["bgg_id"] for game in games_data}
+        existing = {}
+        if new_ids:
+            result = await session.execute(select(BGGGame).where(BGGGame.bgg_id.in_(new_ids)))
+            existing = {game.bgg_id: game for game in result.scalars().all()}
+
+        for data in games_data:
+            bgg_id = data["bgg_id"]
+            title = data.get("title") or data.get("name") or f"BGG ID {bgg_id}"
+            model = existing.get(bgg_id)
+            if model:
+                apply_model_fields(model, data)
+                log_info(f"♻️ Zaktualizowano dane gry: {title}")
+                updated += 1
+            else:
+                session.add(BGGGame(**data))
+                log_info(f"➕ Dodano nową grę: {title}")
+                inserted += 1
+
+        result = await session.execute(select(BGGGame.bgg_id))
+        all_db_ids = set(result.scalars().all())
+        to_delete = all_db_ids - collection_ids
+        if to_delete:
+            await session.execute(delete(BGGGame).where(BGGGame.bgg_id.in_(to_delete)))
+            deleted = len(to_delete)
+
+        await session.commit()
+    finally:
+        await session.close()
+
+    return inserted, updated, deleted
+
+
+# =============================================================================
+# PUBLIC ENTRY POINT
+# =============================================================================
+
 async def fetch_bgg_collection(username: str) -> None:
     log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
 
     collection_url = f"{BGG_XML_BASE}/collection?username={username}&stats=1"
-    thing_url_tmpl = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
 
     async with _make_client() as client:
         auth = BGGAuthSessionManager()
@@ -299,67 +435,19 @@ async def fetch_bgg_collection(username: str) -> None:
 
         log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
 
-        for idx, (bgg_id, item) in enumerate(collection_data.items(), start=1):
+        collection_items = list(collection_data.items())
+        collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
+        sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+        tasks = []
+
+        for idx, (bgg_id, item) in enumerate(collection_items, start=1):
             basic_data = extract_collection_basics(item)
-            title = basic_data.get("title") or f"ID={bgg_id}"
-            log_info(f"\n[{idx}/{len(collection_data)}] 🧩 Przetwarzam grę: {title} (ID={bgg_id})")
+            tasks.append(_build_game_payload(client, auth, sem, idx, len(collection_items), bgg_id, basic_data))
 
-            detail_url = thing_url_tmpl.format(bgg_id=bgg_id)
-            detail_root = await fetch_xml(client, detail_url)
-            detail_item = detail_root.find("item")
-            if not detail_item:
-                log_info(f"⚠️ Pominięto grę {title} (ID={bgg_id}) - brak danych szczegółowych")
-                continue
+        results = await asyncio.gather(*tasks)
+        games_data = [result for result in results if result is not None]
+        inserted, updated, deleted = await _persist_games(games_data, collection_ids)
 
-            detailed_data = extract_details(detail_item)
-
-            private_data = await fetch_private_collection_item(client, auth, int(bgg_id))
-            if private_data:
-                log_info("🔒 Private purchase fields: available")
-            else:
-                log_info("🔒 Private purchase fields: not available")
-
-            full_data = {
-                "bgg_id": int(bgg_id),
-                **basic_data,
-                **detailed_data,
-                **(private_data or {}),
-            }
-
-            # Keep scraper safe even before DB/model migrations add the new fields
-            # full_data_db = _filter_to_model_fields(full_data)
-            # Scraper with working migration to DB of private data
-            full_data_db = full_data
-
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(select(BGGGame).where(BGGGame.bgg_id == int(bgg_id)))
-                existing = result.scalars().first()
-
-                if existing:
-                    for field, value in full_data_db.items():
-                        setattr(existing, field, value)
-                    log_info(f"♻️ Zaktualizowano dane gry: {title}")
-                else:
-                    session.add(BGGGame(**full_data_db))
-                    log_info(f"➕ Dodano nową grę: {title}")
-
-                await session.commit()
-
-            # krótka pauza „grzecznościowa” między /thing
-            pause_time = 1.5
-            log_info(f"⏳ Pauza {pause_time} s by uniknąć limitów BGG")
-            await asyncio.sleep(pause_time)
-
-    # Usuwanie gier, których już nie ma w kolekcji
-    current_ids = {int(bgg_id) for bgg_id in collection_data.keys()}
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(BGGGame.bgg_id))
-        all_db_ids = set(result.scalars().all())
-
-        to_delete = all_db_ids - current_ids
-        if to_delete:
-            await session.execute(BGGGame.__table__.delete().where(BGGGame.bgg_id.in_(to_delete)))
-            await session.commit()
-            log_info(f"🗑 Usunięto {len(to_delete)} gier spoza kolekcji")
-
-    log_success("🎉 Zakończono przetwarzanie całej kolekcji BGG")
+    log_success(
+        f"🎉 Kolekcja BGG została zsynchronizowana z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"
+    )

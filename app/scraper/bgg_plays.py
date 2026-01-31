@@ -1,23 +1,35 @@
 import os
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
 from app.models.bgg_plays import BGGPlay
 from app.services.bgg.auth_session import BGGAuthSessionManager
 from app.utils.logging import log_info, log_success
+from app.utils.convert import to_bool, to_int
 
 USER_AGENT = os.getenv("USER_AGENT", "bgg-api/1.0 (+https://railway.app)")
 BGG_PLAYS_URL = "https://boardgamegeek.com/geekplay.php"
 
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
 # BGG can rate-limit; keep it gentle
 DEFAULT_DELAY_SECONDS = float(os.getenv("BGG_PLAYS_DELAY_SECONDS", "0.8"))
 DEFAULT_SHOWCOUNT = int(os.getenv("BGG_PLAYS_SHOWCOUNT", "1000"))
+PLAY_CONCURRENCY = int(os.getenv("BGG_PLAYS_CONCURRENCY", "2"))
 
+
+# =============================================================================
+# HTTP HELPERS
+# =============================================================================
 
 def _default_headers() -> Dict[str, str]:
     return {
@@ -35,29 +47,9 @@ def _make_client() -> httpx.AsyncClient:
     )
 
 
-def _to_int(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-    try:
-        s = str(value).strip()
-        if s == "":
-            return None
-        return int(float(s))
-    except Exception:
-        return None
-
-
-def _to_bool01(value: Any) -> Optional[bool]:
-    # BGG typically uses "0"/"1" strings
-    if value is None:
-        return None
-    s = str(value).strip().lower()
-    if s in ("1", "true", "yes"):
-        return True
-    if s in ("0", "false", "no"):
-        return False
-    return None
-
+# =============================================================================
+# COMMENT HELPERS
+# =============================================================================
 
 def _extract_comments(play: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
     c = play.get("comments")
@@ -67,6 +59,10 @@ def _extract_comments(play: Dict[str, Any]) -> tuple[Optional[str], Optional[str
         return c, c
     return None, None
 
+
+# =============================================================================
+# PLAYS FETCHING HELPERS
+# =============================================================================
 
 async def fetch_bgg_plays_page(
     client: httpx.AsyncClient,
@@ -96,27 +92,31 @@ async def fetch_bgg_plays_page(
     return resp.json()
 
 
+# =============================================================================
+# PLAYS TRANSFORMATION HELPERS
+# =============================================================================
+
 def _play_to_model_data(play: Dict[str, Any]) -> Dict[str, Any]:
     comments_value, comments_rendered = _extract_comments(play)
 
     data: Dict[str, Any] = {
-        "play_id": _to_int(play.get("playid")),
-        "user_id": _to_int(play.get("userid")),
+        "play_id": to_int(play.get("playid")),
+        "user_id": to_int(play.get("userid")),
         "object_type": play.get("objecttype"),
-        "object_id": _to_int(play.get("objectid")),
+        "object_id": to_int(play.get("objectid")),
         "tstamp": play.get("tstamp"),
         "play_date": play.get("playdate"),
-        "quantity": _to_int(play.get("quantity")),
-        "length": _to_int(play.get("length")),
+        "quantity": to_int(play.get("quantity")),
+        "length": to_int(play.get("length")),
         "location": play.get("location"),
-        "num_players": _to_int(play.get("numplayers")),
-        "length_ms": _to_int(play.get("length_ms")),
+        "num_players": to_int(play.get("numplayers")),
+        "length_ms": to_int(play.get("length_ms")),
         "comments_value": comments_value,
         "comments_rendered": comments_rendered,
-        "incomplete": _to_bool01(play.get("incomplete")),
-        "now_in_stats": _to_bool01(play.get("nowinstats")),
+        "incomplete": to_bool(play.get("incomplete")),
+        "now_in_stats": to_bool(play.get("nowinstats")),
         "win_state": play.get("winstate"),
-        "online": _to_bool01(play.get("online")),
+        "online": to_bool(play.get("online")),
         "game_name": play.get("name"),
         "players": play.get("players"),
         "subtypes": play.get("subtypes"),
@@ -125,6 +125,10 @@ def _play_to_model_data(play: Dict[str, Any]) -> Dict[str, Any]:
 
     return data
 
+
+# =============================================================================
+# DATA PERSISTENCE
+# =============================================================================
 
 async def upsert_play(session, data: Dict[str, Any]) -> bool:
     """
@@ -181,64 +185,91 @@ async def fetch_all_plays_for_game(
     return all_plays
 
 
+# =============================================================================
+# SYNC HELPERS
+# =============================================================================
+
+async def _sync_game_plays(
+    client: httpx.AsyncClient,
+    auth: BGGAuthSessionManager,
+    sem: asyncio.Semaphore,
+    idx: int,
+    total: int,
+    bgg_id: int,
+    title: str | None,
+) -> Dict[str, int]:
+    game_label = title or f"bgg_id={bgg_id}"
+    inserted = 0
+    updated = 0
+
+    async with sem:
+        log_info(f"[{idx}/{total}] 🎲 Plays: pobieram dla gry: {game_label}")
+        try:
+            plays = await fetch_all_plays_for_game(client, auth, bgg_id=bgg_id, showcount=DEFAULT_SHOWCOUNT)
+        except httpx.HTTPStatusError as e:
+            log_info(f"⚠️ Plays HTTP error for bgg_id={bgg_id}: {e.response.status_code}")
+            await asyncio.sleep(DEFAULT_DELAY_SECONDS * 2)
+            return {"inserted": 0, "updated": 0}
+        except Exception as e:
+            log_info(f"⚠️ Plays error for bgg_id={bgg_id}: {type(e).__name__}: {e}")
+            await asyncio.sleep(DEFAULT_DELAY_SECONDS * 2)
+            return {"inserted": 0, "updated": 0}
+
+        if not plays:
+            await asyncio.sleep(DEFAULT_DELAY_SECONDS)
+            return {"inserted": 0, "updated": 0}
+
+        session = AsyncSessionLocal()
+        session = cast(AsyncSession, session)
+        try:
+            async with session.begin():
+                for p in plays:
+                    data = _play_to_model_data(p)
+                    data["object_id"] = bgg_id
+                    inserted_flag = await upsert_play(session, data)
+                    if inserted_flag:
+                        inserted += 1
+                    else:
+                        updated += 1
+        finally:
+            await session.close()
+
+        await asyncio.sleep(DEFAULT_DELAY_SECONDS)
+    return {"inserted": inserted, "updated": updated}
+
+
+# =============================================================================
+# PUBLIC ENTRY POINT
+# =============================================================================
+
 async def update_bgg_plays_from_collection() -> Dict[str, Any]:
-    """
-    Cross-reference rule:
-    - We only fetch plays for games currently present in our DB collection (BGGGame).
-    - For each bgg_id, call BGG plays endpoint and upsert by play_id.
-    """
     log_info("📅 Rozpoczynam pobieranie plays z BGG (per gra z kolekcji w DB)")
 
     auth = BGGAuthSessionManager()
     inserted_total = 0
     updated_total = 0
-    games_total = 0
 
     async with _make_client() as client:
-        # 1) load current collection bgg_ids from DB
-        async with AsyncSessionLocal() as session:
+        session = AsyncSessionLocal()
+        session = cast(AsyncSession, session)
+        try:
             res = await session.execute(
                 select(BGGGame.bgg_id, BGGGame.title).order_by(BGGGame.bgg_id.asc())
             )
             games = [(row[0], row[1]) for row in res.all() if row[0] is not None]
-
+        finally:
+            await session.close()
         games_total = len(games)
+        sem = asyncio.Semaphore(PLAY_CONCURRENCY)
+        tasks = [
+            _sync_game_plays(client, auth, sem, idx, games_total, bgg_id, title)
+            for idx, (bgg_id, title) in enumerate(games, start=1)
+        ]
 
-        # 2) iterate and fetch plays
-        for idx, (bgg_id, title) in enumerate(games, start=1):
-            game_label = title or f"bgg_id={bgg_id}"
-            log_info(f"[{idx}/{games_total}] 🎲 Plays: pobieram dla gry: {game_label}")
-
-            try:
-                plays = await fetch_all_plays_for_game(client, auth, bgg_id=bgg_id, showcount=DEFAULT_SHOWCOUNT)
-
-                if not plays:
-                    await asyncio.sleep(DEFAULT_DELAY_SECONDS)
-                    continue
-
-                # 3) upsert plays
-                async with AsyncSessionLocal() as session:
-                    async with session.begin():
-                        for p in plays:
-                            data = _play_to_model_data(p)
-
-                            # ensure object_id matches current bgg_id even if missing/strange
-                            data["object_id"] = bgg_id
-
-                            inserted = await upsert_play(session, data)
-                            if inserted:
-                                inserted_total += 1
-                            else:
-                                updated_total += 1
-
-                await asyncio.sleep(DEFAULT_DELAY_SECONDS)
-
-            except httpx.HTTPStatusError as e:
-                log_info(f"⚠️ Plays HTTP error for bgg_id={bgg_id}: {e.response.status_code}")
-                await asyncio.sleep(DEFAULT_DELAY_SECONDS * 2)
-            except Exception as e:
-                log_info(f"⚠️ Plays error for bgg_id={bgg_id}: {type(e).__name__}: {e}")
-                await asyncio.sleep(DEFAULT_DELAY_SECONDS * 2)
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            inserted_total += result.get("inserted", 0)
+            updated_total += result.get("updated", 0)
 
     log_success(
         f"✅ Plays import zakończony. Games: {games_total}, Inserted: {inserted_total}, Updated: {updated_total}"
