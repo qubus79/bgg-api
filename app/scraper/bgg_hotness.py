@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import random
 import asyncio
 import httpx
 import xml.etree.ElementTree as ET
@@ -28,6 +29,8 @@ BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")
 USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
 HOTNESS_DETAIL_CONCURRENCY = int(os.getenv("BGG_HOTNESS_DETAIL_CONCURRENCY", "3"))
 HOTNESS_DETAIL_PAUSE_SECONDS = float(os.getenv("BGG_HOTNESS_DETAIL_PAUSE_SECONDS", "1.5"))
+BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.3"))
+BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.2"))
 
 
 # =============================================================================
@@ -68,7 +71,9 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
             resp = await client.get(url)
 
             if resp.status_code == 200:
-                return ET.fromstring(resp.text)
+                root = ET.fromstring(resp.text)
+                await asyncio.sleep(BGG_REQUEST_PAUSE_SECONDS + random.uniform(0, BGG_REQUEST_JITTER_SECONDS))
+                return root
 
             if resp.status_code == 202:
                 delay = float(resp.headers.get("Retry-After", base_delay * attempt))
