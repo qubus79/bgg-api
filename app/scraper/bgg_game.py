@@ -14,6 +14,9 @@ from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
 from app.utils.model_helpers import apply_model_fields
 from app.utils.bgg_hash_cache import build_hash_cache, compute_payload_hash
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_RESET = "\033[0m"
 
 # New: BGG private collection data requires an authenticated session (cookies)
 from app.services.bgg.auth_session import BGGAuthSessionManager
@@ -443,12 +446,11 @@ async def fetch_bgg_collection(username: str) -> None:
         hash_cache = await build_hash_cache()
         if hash_cache is None:
             log_info("🗂️ Hash cache Redis nie został skonfigurowany lub nie działa; każdy /thing będzie przetwarzany")
-        if hash_cache is None:
-            log_info("🗂️ Cache hashów Redis niedostępny – każda gra pobierana")
         collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
         tasks = []
+        hash_skips = 0
 
         for idx, (bgg_id, item) in enumerate(collection_items, start=1):
             if bgg_id is None:
@@ -466,6 +468,7 @@ async def fetch_bgg_collection(username: str) -> None:
                         f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — hash kolekcji ({collection_hash[:8]}) taki sam jak w Redisie, pomijam detail"
                     )
                     should_fetch = False
+                    hash_skips += 1
 
             if should_fetch:
                 tasks.append(
@@ -507,6 +510,10 @@ async def fetch_bgg_collection(username: str) -> None:
 
         inserted, updated, deleted = await _persist_games(games_data, collection_ids)
 
-    log_success(
-        f"🎉 Kolekcja BGG zsynchronizowana (inserted={inserted}, updated={updated}, removed={deleted}, detail_hash_updates={detail_hash_updates}, hash_skips={detail_hash_skips})"
+    total_hash_skips = hash_skips + detail_hash_skips
+    summary = (
+        f"{ANSI_GREEN}🎉 Kolekcja BGG zsynchronizowana{ANSI_RESET} "
+        f"(inserted={inserted}, updated={updated}, removed={deleted}) | "
+        f"{ANSI_YELLOW}🧾 hash skips={total_hash_skips}, detail hash updates={detail_hash_updates}{ANSI_RESET}"
     )
+    log_success(summary)
