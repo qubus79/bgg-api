@@ -441,6 +441,8 @@ async def fetch_bgg_collection(username: str) -> None:
         log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
 
         hash_cache = await build_hash_cache()
+        if hash_cache is None:
+            log_info("🗂️ Cache hashów Redis niedostępny – każda gra pobierana")
         collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -458,7 +460,9 @@ async def fetch_bgg_collection(username: str) -> None:
                 cached_collection = await hash_cache.get_collection_hash(int(bgg_id))
                 cached_detail = await hash_cache.get_detail_hash(int(bgg_id))
                 if cached_collection == collection_hash and cached_detail:
-                    log_info(f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — brak zmian, pomijam detail")
+                    log_info(
+                        f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — hash kolekcji ({collection_hash[:8]}) taki sam jak w Redisie, pomijam detail"
+                    )
                     should_fetch = False
 
             if should_fetch:
@@ -481,11 +485,16 @@ async def fetch_bgg_collection(username: str) -> None:
                 previous_detail_hash = await hash_cache.get_detail_hash(bgg_id)
                 if previous_detail_hash == payload_hash:
                     await hash_cache.set_collection_hash(bgg_id, collection_hash)
-                    log_info(f"🔁 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — hash niezmieniony, pomijam zapisy")
+                    log_info(
+                        f"🔁 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — detail hash {payload_hash[:8]} nie zmieniony, pomijam zapisy"
+                    )
                     skip_write = True
                 else:
                     await hash_cache.set_detail_hash(bgg_id, payload_hash)
                     await hash_cache.set_collection_hash(bgg_id, collection_hash)
+                    log_info(
+                        f"💾 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — zapisuję nowe hashy (collection {collection_hash[:8]}, detail {payload_hash[:8]})"
+                    )
 
             if not skip_write:
                 games_data.append(full_data)

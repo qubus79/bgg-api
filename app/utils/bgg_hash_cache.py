@@ -1,8 +1,14 @@
 import hashlib
+import hashlib
+import importlib
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class BGGHashCache:
@@ -48,13 +54,14 @@ async def build_hash_cache() -> Optional[BGGHashCache]:
         return None
 
     try:
-        import redis.asyncio as redis
-
-        # password = os.getenv("BGG_HASH_REDIS_PASSWORD")
+        redis_module = importlib.import_module("redis.asyncio")
+        password = os.getenv("BGG_HASH_REDIS_PASSWORD")
         db = int(os.getenv("BGG_HASH_REDIS_DB", "0"))
         prefix = os.getenv("BGG_HASH_REDIS_PREFIX", "bgg_game_hash")
-        client = redis.from_url(redis_url, password=password, db=db, decode_responses=True)
+        client = redis_module.from_url(redis_url, password=password, db=db, decode_responses=True)
         await client.ping()
+        logger.info("BGG hash cache connected to Redis %s db=%s prefix=%s", redis_url, db, prefix)
         return BGGHashCache(client, prefix)
-    except Exception:
+    except Exception as exc:
+        logger.warning("BGG hash cache unavailable (%s): %s", redis_url, exc)
         return None
