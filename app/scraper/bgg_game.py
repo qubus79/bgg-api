@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional, List, cast
+from typing import Dict, Any, Optional, List, Tuple, cast
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
 from app.utils.model_helpers import apply_model_fields
+from app.utils.bgg_hash_cache import build_hash_cache, compute_payload_hash
 
 # New: BGG private collection data requires an authenticated session (cookies)
 from app.services.bgg.auth_session import BGGAuthSessionManager
@@ -334,7 +335,8 @@ async def _build_game_payload(
     total: int,
     bgg_id: str,
     basic_data: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    collection_hash: str,
+) -> Optional[Tuple[Dict[str, Any], str, str]]:
 
     title = basic_data.get("title") or f"ID={bgg_id}"
     detail_url = THING_URL_TMPL.format(bgg_id=bgg_id)
@@ -362,8 +364,15 @@ async def _build_game_payload(
             **(private_data or {}),
         }
 
+    payload = {
+        "collection": basic_data,
+        "details": detailed_data,
+        "private": private_data or {},
+    }
+    payload_hash = compute_payload_hash(payload)
+
     await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
-    return full_data
+    return full_data, collection_hash, payload_hash
 
 
 # =============================================================================
@@ -431,17 +440,56 @@ async def fetch_bgg_collection(username: str) -> None:
 
         log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
 
+        hash_cache = await build_hash_cache()
         collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
         tasks = []
 
         for idx, (bgg_id, item) in enumerate(collection_items, start=1):
+            if bgg_id is None:
+                continue
+
             basic_data = extract_collection_basics(item)
-            tasks.append(_build_game_payload(client, auth, sem, idx, len(collection_items), bgg_id, basic_data))
+            collection_hash = compute_payload_hash({"collection": basic_data})
+            should_fetch = True
+
+            if hash_cache:
+                cached_collection = await hash_cache.get_collection_hash(int(bgg_id))
+                cached_detail = await hash_cache.get_detail_hash(int(bgg_id))
+                if cached_collection == collection_hash and cached_detail:
+                    log_info(f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — brak zmian, pomijam detail")
+                    should_fetch = False
+
+            if should_fetch:
+                tasks.append(
+                    _build_game_payload(client, auth, sem, idx, len(collection_items), bgg_id, basic_data, collection_hash)
+                )
 
         results = await asyncio.gather(*tasks)
-        games_data = [result for result in results if result is not None]
+        games_data = []
+
+        for result in results:
+            if not result:
+                continue
+
+            full_data, collection_hash, payload_hash = result
+            bgg_id = full_data.get("bgg_id")
+
+            skip_write = False
+            if hash_cache and bgg_id is not None:
+                previous_detail_hash = await hash_cache.get_detail_hash(bgg_id)
+                if previous_detail_hash == payload_hash:
+                    await hash_cache.set_collection_hash(bgg_id, collection_hash)
+                    log_info(f"🔁 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — hash niezmieniony, pomijam zapisy")
+                    skip_write = True
+                else:
+                    await hash_cache.set_detail_hash(bgg_id, payload_hash)
+                    await hash_cache.set_collection_hash(bgg_id, collection_hash)
+
+            if not skip_write:
+                games_data.append(full_data)
+
         inserted, updated, deleted = await _persist_games(games_data, collection_ids)
 
     log_success(

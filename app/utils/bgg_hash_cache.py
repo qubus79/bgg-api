@@ -1,0 +1,48 @@
+import hashlib
+import json
+import os
+from typing import Any, Optional
+
+
+class BGGHashCache:
+    def __init__(self, redis_client: Any, prefix: str) -> None:
+        self._redis = redis_client
+        self._prefix = prefix.rstrip(":")
+
+    def _key(self, suffix: str, bgg_id: int) -> str:
+        return f"{self._prefix}:{suffix}:{bgg_id}"
+
+    async def get_collection_hash(self, bgg_id: int) -> Optional[str]:
+        return await self._redis.get(self._key("collection", bgg_id))
+
+    async def set_collection_hash(self, bgg_id: int, value: str) -> None:
+        await self._redis.set(self._key("collection", bgg_id), value)
+
+    async def get_detail_hash(self, bgg_id: int) -> Optional[str]:
+        return await self._redis.get(self._key("detail", bgg_id))
+
+    async def set_detail_hash(self, bgg_id: int, value: str) -> None:
+        await self._redis.set(self._key("detail", bgg_id), value)
+
+
+def compute_payload_hash(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def build_hash_cache() -> Optional[BGGHashCache]:
+    redis_url = os.getenv("BGG_HASH_REDIS_URL")
+    if not redis_url:
+        return None
+
+    try:
+        import redis.asyncio as redis
+
+        # password = os.getenv("BGG_HASH_REDIS_PASSWORD")
+        db = int(os.getenv("BGG_HASH_REDIS_DB", "0"))
+        prefix = os.getenv("BGG_HASH_REDIS_PREFIX", "bgg_game_hash")
+        client = redis.from_url(redis_url, password=password, db=db, decode_responses=True)
+        await client.ping()
+        return BGGHashCache(client, prefix)
+    except Exception:
+        return None

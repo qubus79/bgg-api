@@ -54,6 +54,7 @@ Key environment variables used in code:
 - BGG_SESSION_CACHE_TTL_SECONDS
 - BGG_LOGIN_URL
 - REDIS_URL (optional, enables Redis-backed session cache)
+- BGG_HASH_REDIS_URL / BGG_HASH_REDIS_PASSWORD / BGG_HASH_REDIS_DB (dedicated Redis instance for collection/detail hashes; keeps the hash cache separate from `session_store`)
 - USER_AGENT (plays scraper)
 - BGG_PLAYS_DELAY_SECONDS
 - BGG_PLAYS_SHOWCOUNT
@@ -98,6 +99,7 @@ HTTP and scraping:
 - Handle BGG rate limiting with retries/backoff (see app/scraper/bgg_game.py).
 - Use authenticated session manager for private endpoints
   (app/services/bgg/auth_session.py).
+- Persist collection/detail hashes in Redis (see app/utils/bgg_hash_cache.py) so that `bgg_game` only fetches `/thing` when either collection metadata or detail payload changed. The hash uses the dedicated `BGG_HASH_REDIS_*` instance, not the session store.
 
 Error handling:
 - Use explicit RuntimeError for hard failures (e.g., missing credentials).
