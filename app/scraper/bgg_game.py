@@ -442,6 +442,8 @@ async def fetch_bgg_collection(username: str) -> None:
 
         hash_cache = await build_hash_cache()
         if hash_cache is None:
+            log_info("🗂️ Hash cache Redis nie został skonfigurowany lub nie działa; każdy /thing będzie przetwarzany")
+        if hash_cache is None:
             log_info("🗂️ Cache hashów Redis niedostępny – każda gra pobierana")
         collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
@@ -472,6 +474,8 @@ async def fetch_bgg_collection(username: str) -> None:
 
         results = await asyncio.gather(*tasks)
         games_data = []
+        detail_hash_updates = 0
+        detail_hash_skips = 0
 
         for result in results:
             if not result:
@@ -488,10 +492,12 @@ async def fetch_bgg_collection(username: str) -> None:
                     log_info(
                         f"🔁 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — detail hash {payload_hash[:8]} nie zmieniony, pomijam zapisy"
                     )
+                    detail_hash_skips += 1
                     skip_write = True
                 else:
                     await hash_cache.set_detail_hash(bgg_id, payload_hash)
                     await hash_cache.set_collection_hash(bgg_id, collection_hash)
+                    detail_hash_updates += 1
                     log_info(
                         f"💾 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — zapisuję nowe hashy (collection {collection_hash[:8]}, detail {payload_hash[:8]})"
                     )
@@ -502,5 +508,5 @@ async def fetch_bgg_collection(username: str) -> None:
         inserted, updated, deleted = await _persist_games(games_data, collection_ids)
 
     log_success(
-        f"🎉 Kolekcja BGG została zsynchronizowana z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"
+        f"🎉 Kolekcja BGG zsynchronizowana (inserted={inserted}, updated={updated}, removed={deleted}, detail_hash_updates={detail_hash_updates}, hash_skips={detail_hash_skips})"
     )

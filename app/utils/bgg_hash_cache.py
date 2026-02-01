@@ -23,13 +23,17 @@ class BGGHashCache:
         return await self._redis.get(self._key("collection", bgg_id))
 
     async def set_collection_hash(self, bgg_id: int, value: str) -> None:
-        await self._redis.set(self._key("collection", bgg_id), value)
+        key = self._key("collection", bgg_id)
+        await self._redis.set(key, value)
+        logger.debug("Hash cache set %s=%s", key, value[:8])
 
     async def get_detail_hash(self, bgg_id: int) -> Optional[str]:
         return await self._redis.get(self._key("detail", bgg_id))
 
     async def set_detail_hash(self, bgg_id: int, value: str) -> None:
-        await self._redis.set(self._key("detail", bgg_id), value)
+        key = self._key("detail", bgg_id)
+        await self._redis.set(key, value)
+        logger.debug("Hash cache set %s=%s", key, value[:8])
 
 
 def _normalize_for_hash(value: Any) -> Any:
@@ -51,6 +55,7 @@ def compute_payload_hash(payload: Any) -> str:
 async def build_hash_cache() -> Optional[BGGHashCache]:
     redis_url = os.getenv("BGG_HASH_REDIS_URL")
     if not redis_url:
+        logger.info("BGG hash cache disabled (BGG_HASH_REDIS_URL not set)")
         return None
 
     try:
