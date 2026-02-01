@@ -291,10 +291,16 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
         f"✅ Plays import zakończony. Games: {games_total}, Inserted: {inserted_total}, Updated: {updated_total}"
     )
     end_time = datetime.utcnow()
-    stats = {"Games": games_total, "Inserted": inserted_total, "Updated": updated_total}
+    total_plays = inserted_total + updated_total
+    stats = {
+        "Total games": games_total,
+        "Plays processed": total_plays,
+        "New plays": inserted_total,
+        "Updated plays": updated_total,
+    }
     details = {
-        "Inserted games": inserted_titles,
-        "Updated games": updated_titles,
+        "New plays": inserted_titles,
+        "Updated plays": updated_titles,
     }
     await send_scrape_message("BGG plays sync", "✅ SUCCESS", start_time, end_time, stats, details)
     return {

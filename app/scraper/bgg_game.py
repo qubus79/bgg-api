@@ -534,6 +534,7 @@ async def fetch_bgg_collection(username: str) -> None:
 
     end_time = datetime.utcnow()
     stats = {
+        "Total games": len(collection_data),
         "Inserted": inserted,
         "Updated": updated,
         "Removed": deleted,

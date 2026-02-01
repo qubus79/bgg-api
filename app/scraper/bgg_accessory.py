@@ -305,7 +305,12 @@ async def fetch_bgg_accessories(username: str) -> None:
         f"🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"
     )
     end_time = datetime.utcnow()
-    stats = {"Inserted": inserted, "Updated": updated, "Removed": deleted}
+    stats = {
+        "Total accessories": len(accessories_data),
+        "Inserted": inserted,
+        "Updated": updated,
+        "Removed": deleted,
+    }
     details = {
         "Added accessories": inserted_titles,
         "Updated accessories": updated_titles,

@@ -230,10 +230,19 @@ async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
             games = await asyncio.gather(*tasks)
             log_success(f"🎲 Zakończono przetwarzanie {len(games)} hotness gier")
             top_games: List[str] = [str(game.get("name") or game.get("title") or "Untitled") for game in games[:10]]
+            top_game_note = None
+            if games:
+                head_game = games[0]
+                head_title = head_game.get("name") or head_game.get("title") or "Untitled"
+                head_rank = head_game.get("rank")
+                rank_text = f"rank {head_rank}" if head_rank is not None else "rank unknown"
+                top_game_note = f"🏅 {head_title} utrzymuje pozycję ({rank_text})"
             details = {"Top games": top_games}
-            stats = {"Games": len(games)}
+            stats = {"Hot games": len(games)}
             end_time = datetime.utcnow()
-            await send_scrape_message("BGG hotness games", "✅ SUCCESS", start_time, end_time, stats, details)
+            await send_scrape_message(
+                "BGG hotness games", "✅ SUCCESS", start_time, end_time, stats, details, notes=top_game_note
+            )
             return games
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness gier: {exc}")
@@ -267,10 +276,19 @@ async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
             persons = [extract_hot_person(item) for item in items]
             log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
             top_persons: List[str] = [str(person.get("name") or "Unknown") for person in persons[:10]]
+            top_person_note = None
+            if persons:
+                head_person = persons[0]
+                head_name = head_person.get("name") or "Unknown"
+                head_rank = head_person.get("rank")
+                rank_text = f"rank {head_rank}" if head_rank is not None else "rank unknown"
+                top_person_note = f"🏅 {head_name} prowadzi w rankingu ({rank_text})"
             details = {"Top persons": top_persons}
-            stats = {"Persons": len(persons)}
+            stats = {"Hot persons": len(persons)}
             end_time = datetime.utcnow()
-            await send_scrape_message("BGG hotness persons", "✅ SUCCESS", start_time, end_time, stats, details)
+            await send_scrape_message(
+                "BGG hotness persons", "✅ SUCCESS", start_time, end_time, stats, details, notes=top_person_note
+            )
             return persons
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness osób: {exc}")
