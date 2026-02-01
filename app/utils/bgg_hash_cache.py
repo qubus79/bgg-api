@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+from datetime import datetime
 from typing import Any, Optional
 
 
@@ -25,8 +26,19 @@ class BGGHashCache:
         await self._redis.set(self._key("detail", bgg_id), value)
 
 
+def _normalize_for_hash(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _normalize_for_hash(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple, set)):
+        return [_normalize_for_hash(v) for v in value]
+    return value
+
+
 def compute_payload_hash(payload: Any) -> str:
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    normalized = _normalize_for_hash(payload)
+    text = json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
