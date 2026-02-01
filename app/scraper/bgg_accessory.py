@@ -331,7 +331,7 @@ async def fetch_bgg_accessories(username: str) -> None:
     end_time = datetime.utcnow()
     stats = {
         "Total accessories": len(accessories_data),
-        "Inserted": inserted,
+        "Added": inserted,
         "Updated": updated,
         "Removed": deleted,
         "Unchanged accessories": skipped,
@@ -341,6 +341,4 @@ async def fetch_bgg_accessories(username: str) -> None:
         "Updated accessories": updated_titles,
         "Removed accessories": deleted_titles,
     }
-    if skipped_titles:
-        details["Unchanged accessories"] = skipped_titles
     await send_scrape_message("BGG accessories sync", "✅ SUCCESS", start_time, end_time, stats, details)

@@ -61,7 +61,7 @@ async def send_scrape_message(
     lines.append("")
     STAT_ICONS: dict[str, str] = {
         "Total games": "🎲",
-        "Inserted": "🧺",
+        "Added": "🧺",
         "Updated": "♻️",
         "Removed": "🗑️",
         "Total accessories": "🪄",

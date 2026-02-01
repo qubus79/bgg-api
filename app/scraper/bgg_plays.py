@@ -332,8 +332,6 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
         "New plays": inserted_titles,
         "Updated plays": updated_titles,
     }
-    if skipped_titles:
-        details["Skipped plays"] = skipped_titles
     await send_scrape_message("BGG plays sync", "✅ SUCCESS", start_time, end_time, stats, details)
     return {
         "games": games_total,
