@@ -1,5 +1,4 @@
 import hashlib
-import hashlib
 import importlib
 import json
 import logging
@@ -16,24 +15,31 @@ class BGGHashCache:
         self._redis = redis_client
         self._prefix = prefix.rstrip(":")
 
-    def _key(self, suffix: str, bgg_id: int) -> str:
-        return f"{self._prefix}:{suffix}:{bgg_id}"
+    def _key(self, suffix: str, identifier: int) -> str:
+        return f"{self._prefix}:{suffix}:{identifier}"
+
+    async def get_hash(self, suffix: str, identifier: int) -> Optional[str]:
+        return await self._redis.get(self._key(suffix, identifier))
+
+    async def set_hash(self, suffix: str, identifier: int, value: str) -> None:
+        key = self._key(suffix, identifier)
+        await self._redis.set(key, value)
+        logger.debug("Hash cache set %s=%s", key, value[:8])
+
+    async def delete_hash(self, suffix: str, identifier: int) -> None:
+        await self._redis.delete(self._key(suffix, identifier))
 
     async def get_collection_hash(self, bgg_id: int) -> Optional[str]:
-        return await self._redis.get(self._key("collection", bgg_id))
+        return await self.get_hash("collection", bgg_id)
 
     async def set_collection_hash(self, bgg_id: int, value: str) -> None:
-        key = self._key("collection", bgg_id)
-        await self._redis.set(key, value)
-        logger.debug("Hash cache set %s=%s", key, value[:8])
+        await self.set_hash("collection", bgg_id, value)
 
     async def get_detail_hash(self, bgg_id: int) -> Optional[str]:
-        return await self._redis.get(self._key("detail", bgg_id))
+        return await self.get_hash("detail", bgg_id)
 
     async def set_detail_hash(self, bgg_id: int, value: str) -> None:
-        key = self._key("detail", bgg_id)
-        await self._redis.set(key, value)
-        logger.debug("Hash cache set %s=%s", key, value[:8])
+        await self.set_hash("detail", bgg_id, value)
 
 
 def _normalize_for_hash(value: Any) -> Any:

@@ -11,6 +11,7 @@ from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
 from app.models.bgg_plays import BGGPlay
 from app.services.bgg.auth_session import BGGAuthSessionManager
+from app.utils.bgg_hash_cache import BGGHashCache, build_hash_cache, compute_payload_hash
 from app.utils.logging import log_info, log_success
 from app.utils.convert import to_bool, to_int
 from app.utils.telegram_notify import send_scrape_message
@@ -132,28 +133,40 @@ def _play_to_model_data(play: Dict[str, Any]) -> Dict[str, Any]:
 # DATA PERSISTENCE
 # =============================================================================
 
-async def upsert_play(session, data: Dict[str, Any]) -> bool:
+async def upsert_play(session, data: Dict[str, Any], hash_cache: BGGHashCache | None) -> str:
     """
     Upsert by unique play_id.
     Returns True if inserted, False if updated.
     """
     play_id = data.get("play_id")
     if not play_id:
-        return False  # skip invalid
+        return "skipped"  # skip invalid
+
+    payload_hash: str | None = None
+    if hash_cache:
+        payload_hash = compute_payload_hash(data)
 
     res = await session.execute(select(BGGPlay).where(BGGPlay.play_id == play_id))
     existing = res.scalar_one_or_none()
 
     if existing:
+        if hash_cache and payload_hash:
+            cached_hash = await hash_cache.get_hash("play", play_id)
+            if cached_hash == payload_hash:
+                return "skipped"
         # update fields (do not touch primary key)
         for k, v in data.items():
             if k in ("id",):
                 continue
             setattr(existing, k, v)
-        return False
+        if hash_cache and payload_hash:
+            await hash_cache.set_hash("play", play_id, payload_hash)
+        return "updated"
 
     session.add(BGGPlay(**data))
-    return True
+    if hash_cache and payload_hash:
+        await hash_cache.set_hash("play", play_id, payload_hash)
+    return "inserted"
 
 
 async def fetch_all_plays_for_game(
@@ -199,12 +212,15 @@ async def _sync_game_plays(
     total: int,
     bgg_id: int,
     title: str | None,
+    hash_cache: BGGHashCache | None,
 ) -> Dict[str, Any]:
     game_label = title or f"bgg_id={bgg_id}"
     inserted = 0
     updated = 0
+    skipped = 0
     inserted_titles: List[str] = []
     updated_titles: List[str] = []
+    skipped_titles: List[str] = []
 
     async with sem:
         log_info(f"[{idx}/{total}] 🎲 Plays: pobieram dla gry: {game_label}")
@@ -230,13 +246,16 @@ async def _sync_game_plays(
                 for p in plays:
                     data = _play_to_model_data(p)
                     data["object_id"] = bgg_id
-                    inserted_flag = await upsert_play(session, data)
-                    if inserted_flag:
+                    result = await upsert_play(session, data, hash_cache)
+                    if result == "inserted":
                         inserted += 1
                         inserted_titles.append(game_label)
-                    else:
+                    elif result == "updated":
                         updated += 1
                         updated_titles.append(game_label)
+                    else:
+                        skipped += 1
+                        skipped_titles.append(game_label)
         finally:
             await session.close()
 
@@ -244,8 +263,10 @@ async def _sync_game_plays(
         return {
             "inserted": inserted,
             "updated": updated,
+            "skipped": skipped,
             "inserted_titles": inserted_titles,
             "updated_titles": updated_titles,
+            "skipped_titles": skipped_titles,
         }
 
 
@@ -260,8 +281,14 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
     auth = BGGAuthSessionManager()
     inserted_total = 0
     updated_total = 0
+    skipped_total = 0
     inserted_titles: List[str] = []
     updated_titles: List[str] = []
+    skipped_titles: List[str] = []
+
+    hash_cache = await build_hash_cache()
+    if hash_cache is None:
+        log_info("🗂️ Hash cache Redis nie został skonfigurowany; każdy zapis zostanie wykonany.")
 
     async with _make_client() as client:
         session = AsyncSessionLocal()
@@ -276,7 +303,7 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
         games_total = len(games)
         sem = asyncio.Semaphore(PLAY_CONCURRENCY)
         tasks = [
-            _sync_game_plays(client, auth, sem, idx, games_total, bgg_id, title)
+            _sync_game_plays(client, auth, sem, idx, games_total, bgg_id, title, hash_cache)
             for idx, (bgg_id, title) in enumerate(games, start=1)
         ]
 
@@ -284,27 +311,33 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
         for result in results:
             inserted_total += result.get("inserted", 0)
             updated_total += result.get("updated", 0)
+            skipped_total += result.get("skipped", 0)
             inserted_titles.extend(result.get("inserted_titles", []))
             updated_titles.extend(result.get("updated_titles", []))
+            skipped_titles.extend(result.get("skipped_titles", []))
 
     log_success(
-        f"✅ Plays import zakończony. Games: {games_total}, Inserted: {inserted_total}, Updated: {updated_total}"
+        f"✅ Plays import zakończony. Games: {games_total}, Inserted: {inserted_total}, Updated: {updated_total}, Skipped: {skipped_total}"
     )
     end_time = datetime.utcnow()
-    total_plays = inserted_total + updated_total
+    total_plays = inserted_total + updated_total + skipped_total
     stats = {
         "Total games": games_total,
         "Plays processed": total_plays,
         "New plays": inserted_total,
         "Updated plays": updated_total,
+        "Skipped plays": skipped_total,
     }
     details = {
         "New plays": inserted_titles,
         "Updated plays": updated_titles,
     }
+    if skipped_titles:
+        details["Skipped plays"] = skipped_titles
     await send_scrape_message("BGG plays sync", "✅ SUCCESS", start_time, end_time, stats, details)
     return {
         "games": games_total,
         "inserted": inserted_total,
         "updated": updated_total,
+        "skipped": skipped_total,
     }

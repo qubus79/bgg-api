@@ -12,6 +12,7 @@ from app.database import AsyncSessionLocal
 from app.models.bgg_accessory import BGGAccessory
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.bgg_hash_cache import BGGHashCache, build_hash_cache, compute_payload_hash
 from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
 from app.utils.telegram_notify import send_scrape_message
@@ -219,7 +220,8 @@ async def _build_accessory_payload(
 async def _persist_accessories(
     accessories_data: List[Dict[str, Any]],
     collection_ids: set[int],
-) -> tuple[int, int, int, List[str], List[str], List[str]]:
+    hash_cache: BGGHashCache | None,
+) -> tuple[int, int, int, int, List[str], List[str], List[str], List[str]]:
 
     inserted = 0
     updated = 0
@@ -227,6 +229,8 @@ async def _persist_accessories(
     inserted_titles: List[str] = []
     updated_titles: List[str] = []
     deleted_titles: List[str] = []
+    skipped = 0
+    skipped_titles: List[str] = []
 
     session = AsyncSessionLocal()
     session = cast(AsyncSession, session)
@@ -241,16 +245,30 @@ async def _persist_accessories(
             bgg_id = data["bgg_id"]
             title = data.get("name") or f"ID={bgg_id}"
             model = existing.get(bgg_id)
+            payload_hash: str | None = None
+            if hash_cache:
+                payload_hash = compute_payload_hash(data)
+                cached_hash = await hash_cache.get_hash("accessory", bgg_id)
+                if cached_hash == payload_hash and model:
+                    skipped += 1
+                    skipped_titles.append(title)
+                    log_info(f"🛡️ {title} (ID={bgg_id}) — hash niezmieniony, pomijam zapis")
+                    continue
+
             if model:
                 apply_model_fields(model, data)
                 log_info(f"♻️ Zaktualizowano dane akcesorium: {title}")
                 updated += 1
                 updated_titles.append(title)
+                if hash_cache and payload_hash:
+                    await hash_cache.set_hash("accessory", bgg_id, payload_hash)
             else:
                 session.add(BGGAccessory(**data))
                 log_info(f"➕ Dodano nowe akcesorium: {title}")
                 inserted += 1
                 inserted_titles.append(title)
+                if hash_cache and payload_hash:
+                    await hash_cache.set_hash("accessory", bgg_id, payload_hash)
 
         result = await session.execute(select(BGGAccessory.bgg_id))
         all_db_ids = set(result.scalars().all())
@@ -260,12 +278,15 @@ async def _persist_accessories(
             deleted_titles.extend([row[1] or f"BGG ID {row[0]}" for row in result.all()])
             await session.execute(delete(BGGAccessory).where(BGGAccessory.bgg_id.in_(to_delete)))
             deleted = len(to_delete)
+            if hash_cache:
+                for removed_id in to_delete:
+                    await hash_cache.delete_hash("accessory", removed_id)
 
         await session.commit()
     finally:
         await session.close()
 
-    return inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles
+    return inserted, updated, deleted, skipped, inserted_titles, updated_titles, deleted_titles, skipped_titles
 
 
 # =============================================================================
@@ -297,8 +318,11 @@ async def fetch_bgg_accessories(username: str) -> None:
 
         results = await asyncio.gather(*tasks)
         accessories_data = [result for result in results if result is not None]
-        inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_accessories(
-            accessories_data, collection_ids
+        hash_cache = await build_hash_cache()
+        if hash_cache is None:
+            log_info("🗂️ Hash cache Redis nie został skonfigurowany; każdy rekord będzie zapisywany.")
+        inserted, updated, deleted, skipped, inserted_titles, updated_titles, deleted_titles, skipped_titles = await _persist_accessories(
+            accessories_data, collection_ids, hash_cache
         )
 
     log_success(
@@ -310,10 +334,13 @@ async def fetch_bgg_accessories(username: str) -> None:
         "Inserted": inserted,
         "Updated": updated,
         "Removed": deleted,
+        "Unchanged accessories": skipped,
     }
     details = {
         "Added accessories": inserted_titles,
         "Updated accessories": updated_titles,
         "Removed accessories": deleted_titles,
     }
+    if skipped_titles:
+        details["Unchanged accessories"] = skipped_titles
     await send_scrape_message("BGG accessories sync", "✅ SUCCESS", start_time, end_time, stats, details)
