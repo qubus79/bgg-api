@@ -1,5 +1,6 @@
 import os
 import asyncio
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import httpx
@@ -12,6 +13,7 @@ from app.models.bgg_plays import BGGPlay
 from app.services.bgg.auth_session import BGGAuthSessionManager
 from app.utils.logging import log_info, log_success
 from app.utils.convert import to_bool, to_int
+from app.utils.telegram_notify import send_scrape_message
 
 USER_AGENT = os.getenv("USER_AGENT", "bgg-api/1.0 (+https://railway.app)")
 BGG_PLAYS_URL = "https://boardgamegeek.com/geekplay.php"
@@ -197,10 +199,12 @@ async def _sync_game_plays(
     total: int,
     bgg_id: int,
     title: str | None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     game_label = title or f"bgg_id={bgg_id}"
     inserted = 0
     updated = 0
+    inserted_titles: List[str] = []
+    updated_titles: List[str] = []
 
     async with sem:
         log_info(f"[{idx}/{total}] 🎲 Plays: pobieram dla gry: {game_label}")
@@ -229,13 +233,20 @@ async def _sync_game_plays(
                     inserted_flag = await upsert_play(session, data)
                     if inserted_flag:
                         inserted += 1
+                        inserted_titles.append(game_label)
                     else:
                         updated += 1
+                        updated_titles.append(game_label)
         finally:
             await session.close()
 
         await asyncio.sleep(DEFAULT_DELAY_SECONDS)
-    return {"inserted": inserted, "updated": updated}
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "inserted_titles": inserted_titles,
+            "updated_titles": updated_titles,
+        }
 
 
 # =============================================================================
@@ -244,10 +255,13 @@ async def _sync_game_plays(
 
 async def update_bgg_plays_from_collection() -> Dict[str, Any]:
     log_info("📅 Rozpoczynam pobieranie plays z BGG (per gra z kolekcji w DB)")
+    start_time = datetime.utcnow()
 
     auth = BGGAuthSessionManager()
     inserted_total = 0
     updated_total = 0
+    inserted_titles: List[str] = []
+    updated_titles: List[str] = []
 
     async with _make_client() as client:
         session = AsyncSessionLocal()
@@ -270,10 +284,19 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
         for result in results:
             inserted_total += result.get("inserted", 0)
             updated_total += result.get("updated", 0)
+            inserted_titles.extend(result.get("inserted_titles", []))
+            updated_titles.extend(result.get("updated_titles", []))
 
     log_success(
         f"✅ Plays import zakończony. Games: {games_total}, Inserted: {inserted_total}, Updated: {updated_total}"
     )
+    end_time = datetime.utcnow()
+    stats = {"Games": games_total, "Inserted": inserted_total, "Updated": updated_total}
+    details = {
+        "Inserted games": inserted_titles,
+        "Updated games": updated_titles,
+    }
+    await send_scrape_message("BGG plays sync", "✅ SUCCESS", start_time, end_time, stats, details)
     return {
         "games": games_total,
         "inserted": inserted_total,

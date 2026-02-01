@@ -5,6 +5,7 @@ import os
 import random
 import httpx
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from typing import Dict, Any, List, Optional, cast
 import asyncio
 from app.database import AsyncSessionLocal
@@ -13,6 +14,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
+from app.utils.telegram_notify import send_scrape_message
 from app.utils.model_helpers import apply_model_fields
 
 
@@ -217,11 +219,14 @@ async def _build_accessory_payload(
 async def _persist_accessories(
     accessories_data: List[Dict[str, Any]],
     collection_ids: set[int],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, List[str], List[str], List[str]]:
 
     inserted = 0
     updated = 0
     deleted = 0
+    inserted_titles: List[str] = []
+    updated_titles: List[str] = []
+    deleted_titles: List[str] = []
 
     session = AsyncSessionLocal()
     session = cast(AsyncSession, session)
@@ -240,15 +245,19 @@ async def _persist_accessories(
                 apply_model_fields(model, data)
                 log_info(f"♻️ Zaktualizowano dane akcesorium: {title}")
                 updated += 1
+                updated_titles.append(title)
             else:
                 session.add(BGGAccessory(**data))
                 log_info(f"➕ Dodano nowe akcesorium: {title}")
                 inserted += 1
+                inserted_titles.append(title)
 
         result = await session.execute(select(BGGAccessory.bgg_id))
         all_db_ids = set(result.scalars().all())
         to_delete = all_db_ids - collection_ids
         if to_delete:
+            result = await session.execute(select(BGGAccessory.bgg_id, BGGAccessory.name).where(BGGAccessory.bgg_id.in_(to_delete)))
+            deleted_titles.extend([row[1] or f"BGG ID {row[0]}" for row in result.all()])
             await session.execute(delete(BGGAccessory).where(BGGAccessory.bgg_id.in_(to_delete)))
             deleted = len(to_delete)
 
@@ -256,7 +265,7 @@ async def _persist_accessories(
     finally:
         await session.close()
 
-    return inserted, updated, deleted
+    return inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles
 
 
 # =============================================================================
@@ -265,6 +274,7 @@ async def _persist_accessories(
 
 async def fetch_bgg_accessories(username: str) -> None:
     log_info("📅 Rozpoczynam pobieranie akcesorii BGG")
+    start_time = datetime.utcnow()
 
     collection_url = f"{BGG_XML_BASE}/collection?username={username}&subtype=boardgameaccessory&stats=1"
 
@@ -287,8 +297,18 @@ async def fetch_bgg_accessories(username: str) -> None:
 
         results = await asyncio.gather(*tasks)
         accessories_data = [result for result in results if result is not None]
-        inserted, updated, deleted = await _persist_accessories(accessories_data, collection_ids)
+        inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_accessories(
+            accessories_data, collection_ids
+        )
 
     log_success(
         f"🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"
     )
+    end_time = datetime.utcnow()
+    stats = {"Inserted": inserted, "Updated": updated, "Removed": deleted}
+    details = {
+        "Added accessories": inserted_titles,
+        "Updated accessories": updated_titles,
+        "Removed accessories": deleted_titles,
+    }
+    await send_scrape_message("BGG accessories sync", "✅ SUCCESS", start_time, end_time, stats, details)

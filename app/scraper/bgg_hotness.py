@@ -14,6 +14,7 @@ from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
 from sqlalchemy import select  # nadal dostępne dla ewentualnych zapytań
 from app.utils.convert import to_float, to_int
 from app.utils.logging import log_info, log_success, log_error, log_warning
+from app.utils.telegram_notify import send_scrape_message
 
 
 # =============================================================================
@@ -213,6 +214,7 @@ async def _build_hot_game_payload(
 
 
 async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
+    start_time = datetime.utcnow()
     log_info("🎲 Rozpoczynam pobieranie Hotness Games z BGG")
     try:
         async with _make_client() as client:
@@ -227,6 +229,11 @@ async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
 
             games = await asyncio.gather(*tasks)
             log_success(f"🎲 Zakończono przetwarzanie {len(games)} hotness gier")
+            top_games: List[str] = [str(game.get("name") or game.get("title") or "Untitled") for game in games[:10]]
+            details = {"Top games": top_games}
+            stats = {"Games": len(games)}
+            end_time = datetime.utcnow()
+            await send_scrape_message("BGG hotness games", "✅ SUCCESS", start_time, end_time, stats, details)
             return games
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness gier: {exc}")
@@ -251,6 +258,7 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
 
 
 async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
+    start_time = datetime.utcnow()
     log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
     try:
         async with _make_client() as client:
@@ -258,6 +266,11 @@ async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
             items = root.findall("item")
             persons = [extract_hot_person(item) for item in items]
             log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
+            top_persons: List[str] = [str(person.get("name") or "Unknown") for person in persons[:10]]
+            details = {"Top persons": top_persons}
+            stats = {"Persons": len(persons)}
+            end_time = datetime.utcnow()
+            await send_scrape_message("BGG hotness persons", "✅ SUCCESS", start_time, end_time, stats, details)
             return persons
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness osób: {exc}")

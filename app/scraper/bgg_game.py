@@ -14,6 +14,7 @@ from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
 from app.utils.model_helpers import apply_model_fields
 from app.utils.bgg_hash_cache import build_hash_cache, compute_payload_hash
+from app.utils.telegram_notify import send_scrape_message
 ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
 ANSI_RESET = "\033[0m"
@@ -385,11 +386,14 @@ async def _build_game_payload(
 async def _persist_games(
     games_data: List[Dict[str, Any]],
     collection_ids: set[int],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, List[str], List[str], List[str]]:
 
     inserted = 0
     updated = 0
     deleted = 0
+    inserted_titles: List[str] = []
+    updated_titles: List[str] = []
+    deleted_titles: List[str] = []
 
     session = AsyncSessionLocal()
     session = cast(AsyncSession, session)
@@ -408,15 +412,20 @@ async def _persist_games(
                 apply_model_fields(model, data)
                 log_info(f"♻️ Zaktualizowano dane gry: {title}")
                 updated += 1
+                updated_titles.append(title)
             else:
                 session.add(BGGGame(**data))
                 log_info(f"➕ Dodano nową grę: {title}")
                 inserted += 1
+                inserted_titles.append(title)
 
         result = await session.execute(select(BGGGame.bgg_id))
         all_db_ids = set(result.scalars().all())
         to_delete = all_db_ids - collection_ids
         if to_delete:
+            result = await session.execute(select(BGGGame.bgg_id, BGGGame.title).where(BGGGame.bgg_id.in_(to_delete)))
+            rows = result.all()
+            deleted_titles.extend([row[1] or f"BGG ID {row[0]}" for row in rows])
             await session.execute(delete(BGGGame).where(BGGGame.bgg_id.in_(to_delete)))
             deleted = len(to_delete)
 
@@ -424,7 +433,7 @@ async def _persist_games(
     finally:
         await session.close()
 
-    return inserted, updated, deleted
+    return inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles
 
 
 # =============================================================================
@@ -435,6 +444,7 @@ async def fetch_bgg_collection(username: str) -> None:
     log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
 
     collection_url = f"{BGG_XML_BASE}/collection?username={username}&stats=1"
+    start_time = datetime.utcnow()
 
     async with _make_client() as client:
         auth = BGGAuthSessionManager()
@@ -450,6 +460,7 @@ async def fetch_bgg_collection(username: str) -> None:
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
         tasks = []
+        hash_skips = 0
         hash_skips = 0
 
         for idx, (bgg_id, item) in enumerate(collection_items, start=1):
@@ -468,6 +479,7 @@ async def fetch_bgg_collection(username: str) -> None:
                         f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — hash kolekcji ({collection_hash[:8]}) taki sam jak w Redisie, pomijam detail"
                     )
                     should_fetch = False
+                    hash_skips += 1
                     hash_skips += 1
 
             if should_fetch:
@@ -508,7 +520,9 @@ async def fetch_bgg_collection(username: str) -> None:
             if not skip_write:
                 games_data.append(full_data)
 
-        inserted, updated, deleted = await _persist_games(games_data, collection_ids)
+        inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_games(
+            games_data, collection_ids
+        )
 
     total_hash_skips = hash_skips + detail_hash_skips
     summary = (
@@ -517,3 +531,18 @@ async def fetch_bgg_collection(username: str) -> None:
         f"{ANSI_YELLOW}🧾 hash skips={total_hash_skips}, detail hash updates={detail_hash_updates}{ANSI_RESET}"
     )
     log_success(summary)
+
+    end_time = datetime.utcnow()
+    stats = {
+        "Inserted": inserted,
+        "Updated": updated,
+        "Removed": deleted,
+        "Hash skips": total_hash_skips,
+        "Detail hash updates": detail_hash_updates,
+    }
+    details = {
+        "Added games": inserted_titles,
+        "Updated games": updated_titles,
+        "Removed games": deleted_titles,
+    }
+    await send_scrape_message("BGG collection sync", "✅ SUCCESS", start_time, end_time, stats, details)
