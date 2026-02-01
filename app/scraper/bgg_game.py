@@ -28,12 +28,12 @@ USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
 
 BGG_PRIVATE_BASE = "https://boardgamegeek.com"
 BGG_PRIVATE_USER_ID = int(os.getenv("BGG_PRIVATE_USER_ID", "2382533"))
-DETAIL_CONCURRENCY = int(os.getenv("BGG_DETAIL_CONCURRENCY", "2"))
+DETAIL_CONCURRENCY = int(os.getenv("BGG_DETAIL_CONCURRENCY", "1"))
 THING_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_THING_PAUSE_SECONDS", "1.5"))
 THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
-BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.3"))
-BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.2"))
-BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "1.5"))
+BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.8"))
+BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.4"))
+BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "2"))
 
 
 # =============================================================================
@@ -79,30 +79,26 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
         try:
             resp = await client.get(url)
 
-            # Sukces
             if resp.status_code == 200:
                 root = ET.fromstring(resp.text)
                 await asyncio.sleep(BGG_REQUEST_PAUSE_SECONDS + random.uniform(0, BGG_REQUEST_JITTER_SECONDS))
                 return root
 
-            # 202 — zapytanie w kolejce
             if resp.status_code == 202:
-                delay = float(resp.headers.get("Retry-After", base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR))
+                delay = float(resp.headers.get("Retry-After", base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))))
                 log_info(f"⏳ 202 Accepted — czekam {delay:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay)
                 continue
 
-            # 429 — za dużo zapytań
             if resp.status_code == 429:
-                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
                 jitter = random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
                 log_info(f"🚦 429 Too Many Requests — czekam {delay + jitter:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay + jitter)
                 continue
 
-            # 5xx — spróbuj ponownie z backoffem
             if resp.status_code in (500, 502, 503, 504):
-                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
                 log_info(f"🛠 {resp.status_code} — retry za {delay:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay)
                 continue

@@ -82,20 +82,20 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
                 return root
 
             if resp.status_code == 202:
-                delay = float(resp.headers.get("Retry-After", base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR))
+                delay = float(resp.headers.get("Retry-After", base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))))
                 log_info(f"⏳ 202 Accepted — czekam {delay:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay)
                 continue
 
             if resp.status_code == 429:
-                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
                 jitter = random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
                 log_info(f"🚦 429 Too Many Requests — czekam {delay + jitter:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay + jitter)
                 continue
 
             if resp.status_code in (500, 502, 503, 504):
-                delay = base_delay * attempt * BGG_REQUEST_BACKOFF_FACTOR
+                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
                 log_info(f"🛠 {resp.status_code} — retry za {delay:.1f}s (attempt {attempt}/{max_attempts})")
                 await asyncio.sleep(delay)
                 continue

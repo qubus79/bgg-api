@@ -22,9 +22,9 @@ BGG_PLAYS_URL = "https://boardgamegeek.com/geekplay.php"
 # =============================================================================
 
 # BGG can rate-limit; keep it gentle
-DEFAULT_DELAY_SECONDS = float(os.getenv("BGG_PLAYS_DELAY_SECONDS", "0.8"))
-DEFAULT_SHOWCOUNT = int(os.getenv("BGG_PLAYS_SHOWCOUNT", "1000"))
-PLAY_CONCURRENCY = int(os.getenv("BGG_PLAYS_CONCURRENCY", "2"))
+DEFAULT_DELAY_SECONDS = float(os.getenv("BGG_PLAYS_DELAY_SECONDS", "1.2"))
+DEFAULT_SHOWCOUNT = int(os.getenv("BGG_PLAYS_SHOWCOUNT", "600"))
+PLAY_CONCURRENCY = int(os.getenv("BGG_PLAYS_CONCURRENCY", "1"))
 
 
 # =============================================================================
