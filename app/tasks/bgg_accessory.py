@@ -1,6 +1,7 @@
 from sqlalchemy import select, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from app import jobs
 from app.database import AsyncSessionLocal, engine
 from app.models.bgg_accessory import BGGAccessory, Base
 from app.scraper.bgg_accessory import fetch_bgg_accessories
@@ -17,7 +18,7 @@ async def init_bgg_accessory_db():
 async def setup_accessory_scheduler():
     log_info("Scheduler started. Updating BGG accessories every 6 hours.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(update_bgg_accessories, IntervalTrigger(hours=6), id="update_bgg_accessory_job", replace_existing=True)
+    scheduler.add_job(_scheduled_accessories, IntervalTrigger(hours=6), id="update_bgg_accessory_job", replace_existing=True)
     scheduler.start()
 
 
@@ -35,12 +36,15 @@ async def get_accessory_stats():
         }
 
 
-async def update_bgg_accessories() -> dict:
+async def update_bgg_accessories(ctx=jobs.NULL_CTX) -> dict:
     log_info("Inicjalizacja bazy akcesoriów BGG...")
     await init_bgg_accessory_db()
 
+    ctx.set_stage("fetch_remote", detail=f"akcesoria {USERNAME}", index=1, count=2)
     log_info("Rozpoczynam pobieranie danych z BGG akcesoriów...")
     await fetch_bgg_accessories(USERNAME)
+
+    ctx.set_stage("finalizing", index=2, count=2)
 
     log_success("🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych")
     return {"status": "done"}
@@ -50,3 +54,8 @@ async def get_bgg_accessories() -> list:
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(BGGAccessory))
         return [row.__dict__ for row in result.scalars().all()]
+
+
+async def _scheduled_accessories():
+    """Zaplanowany bieg przez rejestr — widoczny w aplikacji, wspólna blokada."""
+    await jobs.start("bgg_accessories", trigger="schedule")

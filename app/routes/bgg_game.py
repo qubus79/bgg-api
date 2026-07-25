@@ -1,6 +1,7 @@
 # app/routes/bgg_game.py
 
 from fastapi import APIRouter, Query
+from app import jobs
 from app.tasks import bgg_game
 
 router = APIRouter(prefix="/bgg_games", tags=["BGG Games"])
@@ -15,7 +16,7 @@ async def stats():
 
 @router.post("/update_bgg_collection")
 async def update_bgg():
-    return await bgg_game.update_bgg_collection()
+    return await jobs.run_foreground("bgg_collection")
 
 @router.get("/bgg_collection")
 async def get_bgg():

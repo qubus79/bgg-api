@@ -274,7 +274,11 @@ async def _sync_game_plays(
 # PUBLIC ENTRY POINT
 # =============================================================================
 
-async def update_bgg_plays_from_collection() -> Dict[str, Any]:
+async def update_bgg_plays_from_collection(ctx=None) -> Dict[str, Any]:
+    if ctx is None:
+        from app import jobs
+        ctx = jobs.NULL_CTX
+
     log_info("📅 Rozpoczynam pobieranie plays z BGG (per gra z kolekcji w DB)")
     start_time = datetime.utcnow()
 
@@ -302,12 +306,29 @@ async def update_bgg_plays_from_collection() -> Dict[str, Any]:
             await session.close()
         games_total = len(games)
         sem = asyncio.Semaphore(PLAY_CONCURRENCY)
+
+        # Postęp per gra — to najdłuższy etap (pauza ~1,2 s na grę i na stronę),
+        # więc aplikacja musi widzieć „312 z 847" i nazwę aktualnej gry.
+        ctx.set_stage("fetch_remote", total=games_total, unit="gier", index=1, count=2)
+
+        async def _tracked(idx: int, bgg_id: int, title: str) -> Dict[str, Any]:
+            result = await _sync_game_plays(
+                client, auth, sem, idx, games_total, bgg_id, title, hash_cache
+            )
+            ctx.bump()
+            ctx.set_detail(title)
+            ctx.add_counter("inserted", result.get("inserted", 0))
+            ctx.add_counter("updated", result.get("updated", 0))
+            ctx.add_counter("skipped", result.get("skipped", 0))
+            return result
+
         tasks = [
-            _sync_game_plays(client, auth, sem, idx, games_total, bgg_id, title, hash_cache)
+            _tracked(idx, bgg_id, title)
             for idx, (bgg_id, title) in enumerate(games, start=1)
         ]
 
         results = await asyncio.gather(*tasks)
+        ctx.set_stage("finalizing", index=2, count=2)
         for result in results:
             inserted_total += result.get("inserted", 0)
             updated_total += result.get("updated", 0)

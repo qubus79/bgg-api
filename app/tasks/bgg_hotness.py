@@ -1,4 +1,5 @@
 from app.scraper.bgg_hotness import fetch_bgg_hotness_games, fetch_bgg_hotness_persons
+from app import jobs
 from app.database import AsyncSessionLocal
 from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +11,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # ---------------- HOT GAMES ----------------
 
-async def update_hot_games():
+async def update_hot_games(ctx=jobs.NULL_CTX):
     log_info("🔄 Aktualizacja listy hot games z BGG")
+    ctx.set_stage("fetch_remote", detail="hot games", index=1, count=2)
     games_data = await fetch_bgg_hotness_games()
+    ctx.set_stage("db_sync", total=len(games_data), unit="gier", index=2, count=2)
+    ctx.set_progress(len(games_data))
 
     async with AsyncSessionLocal() as session:
         await clear_hot_games(session)  # 🚮 usuń stare wpisy
@@ -50,9 +54,12 @@ async def get_hotness_game_stats():
 
 # ---------------- HOT PERSONS ----------------
 
-async def update_hot_persons():
+async def update_hot_persons(ctx=jobs.NULL_CTX):
     log_info("🔄 Aktualizacja listy hot persons z BGG")
+    ctx.set_stage("fetch_remote", detail="hot persons", index=1, count=2)
     persons_data = await fetch_bgg_hotness_persons()
+    ctx.set_stage("db_sync", total=len(persons_data), unit="osób", index=2, count=2)
+    ctx.set_progress(len(persons_data))
 
     async with AsyncSessionLocal() as session:
         await clear_hot_persons(session)  # 🚮 usuń stare wpisy
@@ -93,7 +100,16 @@ async def get_hotness_person_stats():
 async def setup_hotness_scheduler():
     log_info("🕒 Scheduler started: Hotness aktualizuje się co 4 godziny.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(update_hot_games, IntervalTrigger(hours=4), id="update_hot_games", replace_existing=True)
-    scheduler.add_job(update_hot_persons, IntervalTrigger(hours=4), id="update_hot_persons", replace_existing=True)
+    scheduler.add_job(_scheduled_hot_games, IntervalTrigger(hours=4), id="update_hot_games", replace_existing=True)
+    scheduler.add_job(_scheduled_hot_persons, IntervalTrigger(hours=4), id="update_hot_persons", replace_existing=True)
     scheduler.start()
     log_success("✅ Hotness scheduler uruchomiony")
+
+
+async def _scheduled_hot_games():
+    """Zaplanowany bieg przez rejestr — widoczny w aplikacji, wspólna blokada."""
+    await jobs.start("bgg_hotness_games", trigger="schedule")
+
+
+async def _scheduled_hot_persons():
+    await jobs.start("bgg_hotness_persons", trigger="schedule")

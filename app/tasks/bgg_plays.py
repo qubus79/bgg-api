@@ -4,6 +4,7 @@ from sqlalchemy import select, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app import jobs
 from app.database import AsyncSessionLocal, engine, Base
 from app.models.bgg_plays import BGGPlay
 from app.scraper.bgg_plays import update_bgg_plays_from_collection
@@ -23,7 +24,7 @@ async def setup_plays_scheduler():
     log_info(f"Scheduler started. Updating BGG plays every {PLAYS_SYNC_HOURS} hours.")
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        update_bgg_plays,
+        _scheduled_plays,
         IntervalTrigger(hours=PLAYS_SYNC_HOURS),
         id="update_bgg_plays_job",
         replace_existing=True,
@@ -45,7 +46,7 @@ async def get_plays_stats():
         }
 
 
-async def update_bgg_plays() -> dict:
+async def update_bgg_plays(ctx=jobs.NULL_CTX) -> dict:
     """
     Sync plays for games that exist in our collection DB (cross-reference by bgg_id).
     Uses authenticated cookies via existing auth mechanism inside the scraper.
@@ -54,7 +55,7 @@ async def update_bgg_plays() -> dict:
     await init_plays_db()
 
     log_info("Rozpoczynam pobieranie plays z BGG (na podstawie gier w kolekcji DB)...")
-    result = await update_bgg_plays_from_collection()
+    result = await update_bgg_plays_from_collection(ctx=ctx)
 
     log_success("🎉 Plays z BGG zostały zsynchronizowane z bazą danych")
     return {"status": "done", **(result or {})}
@@ -167,3 +168,7 @@ async def get_my_plays_stats(username: str):
         "plays": total,
         "wins": wins,
     }
+
+async def _scheduled_plays():
+    """Zaplanowany bieg przez rejestr — widoczny w aplikacji, wspólna blokada."""
+    await jobs.start("bgg_plays", trigger="schedule")

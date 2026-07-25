@@ -1,6 +1,7 @@
 # app/routes/bgg_hotness.py
 
 from fastapi import APIRouter
+from app import jobs
 from app.tasks import bgg_hotness
 
 router = APIRouter(prefix="/bgg_hotness", tags=["BGG Hotness"])
@@ -17,7 +18,7 @@ async def games_stats():
 
 @router.post("/games/update")
 async def update_hotness_games():
-    return await bgg_hotness.update_hot_games()
+    return await jobs.run_foreground("bgg_hotness_games")
 
 @router.get("/games")
 async def get_hotness_games():
@@ -36,7 +37,7 @@ async def persons_stats():
 
 @router.post("/persons/update")
 async def update_hotness_persons():
-    return await bgg_hotness.update_hot_persons()
+    return await jobs.run_foreground("bgg_hotness_persons")
 
 @router.get("/persons")
 async def get_hotness_persons():

@@ -1,6 +1,7 @@
 from sqlalchemy import select, text, func, Integer
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from app import jobs
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
 from app.scraper.bgg_game import fetch_bgg_collection
@@ -23,7 +24,7 @@ async def init_bgg_db():
 async def setup_scheduler():
     log_info("Scheduler started. Updating BGG collection every 2 hours.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(update_bgg_collection, IntervalTrigger(hours=2), id="update_bgg_collection_job", replace_existing=True)
+    scheduler.add_job(_scheduled_collection, IntervalTrigger(hours=2), id="update_bgg_collection_job", replace_existing=True)
     scheduler.start()
 
 
@@ -41,12 +42,15 @@ async def get_stats():
         }
 
 
-async def update_bgg_collection() -> dict:
+async def update_bgg_collection(ctx=jobs.NULL_CTX) -> dict:
     log_info("Inicjalizacja bazy BGG...")
     await init_bgg_db()
 
+    ctx.set_stage("fetch_remote", detail=f"kolekcja {USERNAME}", index=1, count=2)
     log_info("Rozpoczynam pobieranie danych z BGG kolekcji...")
     await fetch_bgg_collection(USERNAME)
+
+    ctx.set_stage("finalizing", index=2, count=2)
 
     log_success("🎉 Kolekcja BGG została zsynchronizowana z bazą danych")
     return {"status": "done"}
@@ -239,3 +243,8 @@ async def get_bgg_purchase_stats() -> dict:
             "totals_by_currency": totals_by_currency,
             "status_breakdown": status_breakdown,
         }
+
+
+async def _scheduled_collection():
+    """Zaplanowany bieg przez rejestr — widoczny w aplikacji, wspólna blokada."""
+    await jobs.start("bgg_collection", trigger="schedule")

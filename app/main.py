@@ -5,7 +5,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app import jobs
 from app.database import engine, Base, get_db
+from app.job_routes import router as jobs_router
+from app.jobs_registry import register_jobs
 from app.routes.bgg_game import router as games_router
 from app.routes.bgg_accessory import router as accessories_router
 from app.routes.bgg_hotness import router as hotness_router
@@ -31,6 +34,8 @@ async def create_tables():
 @app.on_event("startup")
 async def startup_event():
     await create_tables()
+    register_jobs()
+    await jobs.init_jobs_table()
     await setup_scheduler()
     await setup_accessory_scheduler()
     await setup_hotness_scheduler()
@@ -42,6 +47,7 @@ app.include_router(games_router)
 app.include_router(accessories_router)
 app.include_router(hotness_router)
 app.include_router(plays_router)
+app.include_router(jobs_router)
 
 # Główny endpoint z podsumowaniem
 @app.get("/")

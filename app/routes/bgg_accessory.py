@@ -1,6 +1,7 @@
 # app/routes/bgg_accessory.py
 
 from fastapi import APIRouter
+from app import jobs
 from app.tasks import bgg_accessory
 
 router = APIRouter(prefix="/bgg_accessories", tags=["BGG Accessories"])
@@ -15,7 +16,7 @@ async def stats():
 
 @router.post("/update")
 async def update_bgg_accessories():
-    return await bgg_accessory.update_bgg_accessories()
+    return await jobs.run_foreground("bgg_accessories")
 
 @router.get("/")
 async def get_bgg_accessories():

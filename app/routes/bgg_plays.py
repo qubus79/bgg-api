@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 
+from app import jobs
 from app.tasks import bgg_plays
 
 router = APIRouter(prefix="/bgg_plays", tags=["BGG Plays"])
@@ -7,8 +8,12 @@ router = APIRouter(prefix="/bgg_plays", tags=["BGG Plays"])
 
 @router.post("/update")
 async def update_bgg_plays():
-    """Trigger a sync of BGG plays for all games currently in the DB collection."""
-    return await bgg_plays.update_bgg_plays()
+    """Trigger a sync of BGG plays for all games currently in the DB collection.
+
+    Zachowuje dotychczasowe zachowanie (czeka na wynik), ale idzie przez rejestr
+    zadań, więc nie może kolidować z uruchomieniem z aplikacji ani ze schedulerem.
+    """
+    return await jobs.run_foreground("bgg_plays")
 
 
 @router.get("")
