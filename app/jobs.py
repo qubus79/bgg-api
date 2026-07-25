@@ -352,6 +352,8 @@ async def _runner(name: str, record: JobRecord, kwargs: dict) -> None:
         record.last_success_at = _utcnow()
         record.stage = "done"
         record.stage_detail = None
+        if record.total:
+            record.current = record.total   # domknij pasek na 100%
         log_info(f"✅ Job '{name}' zakończony: {record.result}")
     except asyncio.CancelledError:
         record.state = "failed"
