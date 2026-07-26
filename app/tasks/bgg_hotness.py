@@ -13,9 +13,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 async def update_hot_games(ctx=jobs.NULL_CTX):
     log_info("🔄 Aktualizacja listy hot games z BGG")
-    ctx.set_stage("fetch_remote", detail="hot games", index=1, count=2)
-    games_data = await fetch_bgg_hotness_games()
-    ctx.set_stage("db_sync", total=len(games_data), unit="gier", index=2, count=2)
+    games_data = await fetch_bgg_hotness_games(ctx=ctx)
+    ctx.set_stage("db_sync", total=len(games_data), unit="gier", index=3, count=3)
     ctx.set_progress(len(games_data))
 
     async with AsyncSessionLocal() as session:
@@ -56,8 +55,7 @@ async def get_hotness_game_stats():
 
 async def update_hot_persons(ctx=jobs.NULL_CTX):
     log_info("🔄 Aktualizacja listy hot persons z BGG")
-    ctx.set_stage("fetch_remote", detail="hot persons", index=1, count=2)
-    persons_data = await fetch_bgg_hotness_persons()
+    persons_data = await fetch_bgg_hotness_persons(ctx=ctx)
     ctx.set_stage("db_sync", total=len(persons_data), unit="osób", index=2, count=2)
     ctx.set_progress(len(persons_data))
 

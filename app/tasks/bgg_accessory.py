@@ -40,11 +40,8 @@ async def update_bgg_accessories(ctx=jobs.NULL_CTX) -> dict:
     log_info("Inicjalizacja bazy akcesoriów BGG...")
     await init_bgg_accessory_db()
 
-    ctx.set_stage("fetch_remote", detail=f"akcesoria {USERNAME}", index=1, count=2)
     log_info("Rozpoczynam pobieranie danych z BGG akcesoriów...")
-    await fetch_bgg_accessories(USERNAME)
-
-    ctx.set_stage("finalizing", index=2, count=2)
+    await fetch_bgg_accessories(USERNAME, ctx=ctx)
 
     log_success("🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych")
     return {"status": "done"}

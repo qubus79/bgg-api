@@ -293,13 +293,18 @@ async def _persist_accessories(
 # PUBLIC ENTRY POINT
 # =============================================================================
 
-async def fetch_bgg_accessories(username: str) -> None:
+async def fetch_bgg_accessories(username: str, ctx=None) -> None:
+    if ctx is None:
+        from app import jobs
+        ctx = jobs.NULL_CTX
+
     log_info("📅 Rozpoczynam pobieranie akcesorii BGG")
     start_time = datetime.utcnow()
 
     collection_url = f"{BGG_XML_BASE}/collection?username={username}&subtype=boardgameaccessory&stats=1"
 
     async with _make_client() as client:
+        ctx.set_stage("fetch_remote", detail=f"kolekcja {username}", index=1, count=3)
         collection_root = await fetch_xml(client, collection_url)
         collection_data = parse_collection_data(collection_root)
 
@@ -308,22 +313,37 @@ async def fetch_bgg_accessories(username: str) -> None:
         collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(ACCESSORY_DETAIL_CONCURRENCY)
-        tasks = []
 
+        # Szczegóły pobierane sekwencyjnie (ACCESSORY_DETAIL_CONCURRENCY=1,
+        # pauza ~1,5 s na pozycję) — tutaj mija większość czasu, więc
+        # raportujemy każde akcesorium osobno.
+        ctx.set_stage("fetch_details", total=len(collection_items), unit="akcesoriów", index=2, count=3)
+
+        async def _tracked(idx: int, bgg_id, basic_data):
+            result = await _build_accessory_payload(
+                client, sem, idx, len(collection_items), bgg_id, basic_data
+            )
+            ctx.bump()
+            source = result or basic_data or {}
+            ctx.set_detail(str(source.get("name") or source.get("title") or ""))
+            return result
+
+        tasks = []
         for idx, (bgg_id, item) in enumerate(collection_items, start=1):
             basic_data = extract_collection_basics(item)
-            tasks.append(
-                _build_accessory_payload(client, sem, idx, len(collection_items), bgg_id, basic_data)
-            )
+            tasks.append(_tracked(idx, bgg_id, basic_data))
 
         results = await asyncio.gather(*tasks)
         accessories_data = [result for result in results if result is not None]
         hash_cache = await build_hash_cache()
         if hash_cache is None:
             log_info("🗂️ Hash cache Redis nie został skonfigurowany; każdy rekord będzie zapisywany.")
+        ctx.set_stage("db_sync", total=len(accessories_data), unit="akcesoriów", index=3, count=3)
         inserted, updated, deleted, skipped, inserted_titles, updated_titles, deleted_titles, skipped_titles = await _persist_accessories(
             accessories_data, collection_ids, hash_cache
         )
+        ctx.set_progress(len(accessories_data))
+        ctx.set_counters(inserted=inserted, updated=updated, removed=deleted, skipped=skipped)
 
     log_success(
         f"🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"

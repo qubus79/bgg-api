@@ -213,17 +213,34 @@ async def _build_hot_game_payload(
     return base_game
 
 
-async def fetch_bgg_hotness_games() -> List[Dict[str, Any]]:
+async def fetch_bgg_hotness_games(ctx=None) -> List[Dict[str, Any]]:
+    if ctx is None:
+        from app import jobs
+        ctx = jobs.NULL_CTX
+
     start_time = datetime.utcnow()
     log_info("🎲 Rozpoczynam pobieranie Hotness Games z BGG")
     try:
         async with _make_client() as client:
+            ctx.set_stage("fetch_remote", detail="lista hot games", index=1, count=3)
             root = await fetch_xml(client, HOT_GAMES_URL)
             items = root.findall("item")
             base_games = [extract_hot_game(item) for item in items]
             sem = asyncio.Semaphore(HOTNESS_DETAIL_CONCURRENCY)
+
+            # Szczegóły pobierane sekwencyjnie (HOTNESS_DETAIL_CONCURRENCY=1,
+            # pauza ~1,5 s na grę) — to tutaj mija większość czasu, więc
+            # raportujemy każdą grę osobno.
+            ctx.set_stage("fetch_details", total=len(base_games), unit="gier", index=2, count=3)
+
+            async def _tracked(idx: int, game: Dict[str, Any]) -> Dict[str, Any]:
+                result = await _build_hot_game_payload(client, sem, idx, len(base_games), game)
+                ctx.bump()
+                ctx.set_detail(str(result.get("name") or result.get("title") or ""))
+                return result
+
             tasks = [
-                _build_hot_game_payload(client, sem, idx, len(base_games), game)
+                _tracked(idx, game)
                 for idx, game in enumerate(base_games, start=1)
             ]
 
@@ -266,14 +283,22 @@ def extract_hot_person(item: ET.Element) -> Dict[str, Any]:
     }
 
 
-async def fetch_bgg_hotness_persons() -> List[Dict[str, Any]]:
+async def fetch_bgg_hotness_persons(ctx=None) -> List[Dict[str, Any]]:
+    if ctx is None:
+        from app import jobs
+        ctx = jobs.NULL_CTX
+
     start_time = datetime.utcnow()
     log_info("👤 Rozpoczynam pobieranie Hotness Persons z BGG")
     try:
         async with _make_client() as client:
+            # Osoby to jedno zapytanie XML (bez szczegółów per osoba),
+            # więc etap jest krótki i raportujemy tylko jego zakończenie.
+            ctx.set_stage("fetch_remote", detail="lista hot persons", index=1, count=2)
             root = await fetch_xml(client, HOT_PERSONS_URL)
             items = root.findall("item")
             persons = [extract_hot_person(item) for item in items]
+            ctx.set_progress(len(persons), total=len(persons))
             log_success(f"👤 Zakończono przetwarzanie {len(persons)} hotness osób")
             top_persons: List[str] = [str(person.get("name") or "Unknown") for person in persons[:10]]
             top_person_note = None
