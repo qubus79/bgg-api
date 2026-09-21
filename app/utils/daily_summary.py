@@ -12,6 +12,9 @@ migracyjnych, więc schemat zostaje nietknięty.
 Dlaczego osobna wiadomość na sync, a nie jedna zbiorcza: każdy sync ma inne
 liczniki i inną historię, a w jednej wiadomości utonęłyby, nie mieszcząc się
 przy okazji w limicie 4096 znaków Telegrama.
+
+Uruchomienie z aplikacji (`trigger == "manual"`) omija blokadę powtórzeń —
+skoro ktoś prosi o wiadomość, ma ją dostać, także po wieczornej wysyłce.
 """
 
 from __future__ import annotations
@@ -193,7 +196,14 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
         log_info("ℹ️ Podsumowanie dnia wyłączone (TELEGRAM_DAILY_SUMMARY).")
         return {"status": "disabled"}
 
-    if await already_sent():
+    # Blokada chroni przed DRUGĄ wysyłką po restarcie procesu, a nie przed
+    # świadomym tapnięciem w aplikacji. Ręczne uruchomienie ma wysłać zawsze —
+    # inaczej przycisk po 23:00 wyglądałby na zepsuty.
+    manual = getattr(ctx, "trigger", None) == "manual"
+
+    if manual:
+        log_info("▶️ Podsumowanie dnia na żądanie — pomijam blokadę powtórzeń.")
+    elif await already_sent():
         log_info("ℹ️ Podsumowanie dnia już poszło — pomijam.")
         return {"status": "skipped", "reason": "already_sent"}
 

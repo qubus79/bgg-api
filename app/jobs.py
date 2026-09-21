@@ -155,6 +155,15 @@ class JobContext:
     def __init__(self, record: JobRecord | None) -> None:
         self._record = record
 
+    @property
+    def trigger(self) -> str | None:
+        """Skąd przyszło uruchomienie: 'manual' (z aplikacji) albo 'schedule'.
+
+        Bez rekordu (NULL_CTX, wywołanie spoza rejestru) zwraca None, więc
+        zadanie zachowa się jak przy harmonogramie — bezpieczniejsza strona.
+        """
+        return self._record.trigger if self._record else None
+
     def set_stage(
         self,
         stage: str,
