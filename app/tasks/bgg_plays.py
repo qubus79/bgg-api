@@ -1,5 +1,4 @@
 import os
-import asyncio
 from sqlalchemy import select, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -8,7 +7,7 @@ from app import jobs
 from app.database import AsyncSessionLocal, engine, Base
 from app.models.bgg_plays import BGGPlay
 from app.scraper.bgg_plays import update_bgg_plays_from_collection
-from app.utils.logging import log_info, log_success, log_warning
+from app.utils.logging import log_info, log_success
 
 
 # Jak często synchronizować plays (domyślnie co 6h, bo to cięższe niż kolekcja)

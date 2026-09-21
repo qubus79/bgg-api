@@ -131,9 +131,12 @@ Telegram notifications:
   across games-api / bgg-api / sleeves-api (except SUMMARY_JOBS); change them in one
   repo and copy the file to the others.
 - The three services share ONE Postgres on Railway, so job_runs holds every service's
-  runs. The summary query, its repeat guard and init_jobs_table() are all scoped to
-  this service's own jobs. Without that scoping each service reported the others'
-  jobs, and a redeploy here marked other services' running jobs as interrupted.
+  runs. job_runs.service (added idempotently by app/jobs.py) identifies the writer;
+  the summary query, its repeat guard, _prune and init_jobs_table() are all scoped by
+  it. Without that scoping each service reported the others' jobs, pruned their
+  history, and a redeploy here marked their running jobs as interrupted.
+- app/utils/telegram_notify.py is a third shared copy, byte-identical except
+  SERVICE_NAME. Its icon maps are the union of all three services' keys.
 - SUMMARY_JOBS is the only source of truth for what this service reports: a registered
   job that is missing from it goes silent. Add every new job to the list.
 - The hotness scrapers re-raise on failure instead of returning []; update_hot_games

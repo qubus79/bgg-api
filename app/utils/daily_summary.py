@@ -6,8 +6,9 @@ w każdym repo, tak samo jak `app/jobs.py`. Różni się między repozytoriami t
 słownikiem `SUMMARY_JOBS`.
 
 Skąd dane: tabela `job_runs`, którą `app/jobs.py` i tak zapisuje po każdym
-przebiegu. Nie ma tu żadnej nowej tabeli ani kolumny — bgg-api nie ma narzędzi
-migracyjnych, więc schemat zostaje nietknięty.
+przebiegu. Bez nowej tabeli — bgg-api nie ma narzędzi migracyjnych; jedyny
+dodatek to kolumna `service`, dokładana idempotentnym `ADD COLUMN IF NOT EXISTS`
+w `app/jobs.py`.
 
 UWAGA: trzy serwisy dzielą JEDNĄ bazę na Railway, więc `job_runs` zawiera
 przebiegi wszystkich trzech. Dlatego zarówno zapytanie o przebiegi, jak
@@ -88,7 +89,13 @@ _FLOW_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
 ]
 
 _STOCK_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
-    ("W katalogu", ("total", "processed_games", "games", "scanned")),
+    # Rozmiar katalogu.
+    ("W katalogu", ("total",)),
+    # Ile pozycji przebieg w ogóle obejrzał. To NIE jest rozmiar katalogu:
+    # koszulki liczą tu gry przejrzane w jednym przebiegu, a The Shelf —
+    # przeskanowane kanały Discorda. Zlepienie tego z „W katalogu" dawało
+    # zestawienia w rodzaju „W katalogu 407 · Zaktualizowane 587".
+    ("Przejrzane", ("processed_games", "games", "scanned")),
     ("Sparsowane", ("parsed",)),
 ]
 
@@ -133,14 +140,15 @@ async def already_sent(within_hours: int = 12) -> bool:
 
     Filtr po nazwie serwisu jest istotny: tabela jest wspólna dla trzech usług,
     a wszystkie zapisują przebiegi pod tą samą nazwą `daily_summary`. Bez niego
-    pierwsza, która zdąży, uciszyłaby dwie pozostałe.
+    pierwsza, która zdąży, uciszyłaby dwie pozostałe. Kolumnę `service` wypełnia
+    `app/jobs.py`; `coalesce` przepuszcza wiersze sprzed jej dodania.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text(
                 "SELECT 1 FROM job_runs "
                 "WHERE job = 'daily_summary' AND state = 'succeeded' "
-                "  AND result->>'service' = :service "
+                "  AND coalesce(service, :service) = :service "
                 "  AND finished_at >= :since LIMIT 1"
             ),
             {
@@ -338,14 +346,7 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
         sent += 1
 
     log_info(f"📊 {SERVICE_NAME}: wysłano {sent} podsumowań dnia.")
-    # `service` nie jest ozdobą — po nim `already_sent` rozpoznaje własne wpisy
-    # we wspólnej tabeli.
-    return {
-        "status": "ok",
-        "service": SERVICE_NAME,
-        "messages": sent,
-        "jobs": len(names),
-    }
+    return {"status": "ok", "messages": sent, "jobs": len(names)}
 
 
 async def schedule_entry() -> None:

@@ -530,6 +530,9 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
 
     total_hash_skips = hash_skips + detail_hash_skips
     ctx.set_counters(
+        # Rozmiar katalogu — bez niego podsumowanie dnia bez zmian nie miało
+        # czego pokazać i kończyło się samym nagłówkiem „Stats".
+        total=len(collection_data),
         inserted=inserted,
         updated=updated,
         removed=deleted,

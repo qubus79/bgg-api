@@ -19,11 +19,18 @@ NOTIFY_SUCCESS = os.getenv("TELEGRAM_NOTIFY_SUCCESS", "false").lower() == "true"
 # Twardy limit Telegrama na długość wiadomości.
 TELEGRAM_LIMIT = 4096
 
-
+# Ikony przy wypunktowaniach i przy statystykach. Jeden zestaw dla trzech
+# serwisów — klucze się nie pokrywają, więc unia niczego nie nadpisuje, a plik
+# może zostać identyczną kopią.
 LIST_ICONS: dict[str, str] = {
+    # premiery
+    "Added premieres": "🧺",
+    "Updated premieres": "♻️",
+    "Removed premieres": "🧹",
+    # kolekcja i akcesoria BGG
     "Added games": "🧺",
     "Updated games": "♻️",
-    "Removed games": "🗑️",
+    "Removed games": "🧹",
     "Added accessories": "🧩",
     "Updated accessories": "🪄",
     "Removed accessories": "🧹",
@@ -31,18 +38,75 @@ LIST_ICONS: dict[str, str] = {
     "Top persons": "🌟",
     "New plays": "🆕",
     "Updated plays": "🔄",
+    # koszulki
+    "Added sleeves": "🆕",
+    "Updated sleeves": "♻️",
+    "Removed games (sleeves)": "🧹",
+    "API errors": "⚠️",
+}
+
+STAT_ICONS: dict[str, str] = {
+    # Etykiety dziennego podsumowania — te idą na Telegram zawsze.
+    "W katalogu": "📦",
+    "Przejrzane": "🔍",
+    "Sparsowane": "📄",
+    "Dodane": "🧺",
+    "Zaktualizowane": "♻️",
+    "Usunięte": "🧹",
+    "Oznaczone jako nieaktywne": "💤",
+    "Pobrane okładki": "🖼️",
+    "Błędy": "⚠️",
+    "Nieudane przebiegi": "❌",
+    # The Shelf — przebieg niepełny (wysyłany mimo wyciszenia sukcesów).
+    "Scanned channels": "🔍",
+    "Parsed channels": "📄",
+    "Failed channels": "⚠️",
+    "Added campaigns": "🧺",
+    "Updated campaigns": "♻️",
+    "Marked inactive": "💤",
+    # Etykiety wiadomości po pojedynczym przebiegu (TELEGRAM_NOTIFY_SUCCESS).
+    "Added premieres": "🧺",
+    "Updated premieres": "♻️",
+    "Skipped premieres": "🗑️",
+    "Removed premieres": "🧹",
+    "Scraped total": "🎯",
+    "Total games": "🎲",
+    "Added": "🧺",
+    "Updated": "♻️",
+    "Removed": "🗑️",
+    "Total accessories": "🪄",
+    "Unchanged accessories": "✅",
+    "Hot games": "🔥",
+    "Hot persons": "🌟",
+    "Hash skips": "🚫",
+    "Detail hash updates": "🔍",
+    "Plays processed": "📊",
+    "Skipped plays": "🗑️",
+    "New plays": "🆕",
+    "Updated plays": "🔄",
+    "Processed games": "🎯",
+    "Removed games (sleeves)": "🧹",
+    "Added sleeves": "🆕",
+    "Updated sleeves": "♻️",
+    "Unchanged sleeves": "✅",
+    "No sleeves found": "🟡",
+    "API errors": "⚠️",
 }
 
 
 def _format_list(title: str, items: List[str], limit: int = 8) -> str:
+    """Wypunktowanie ze skróceniem — pełna lista i tak nie zmieściłaby się
+    w limicie Telegrama."""
     if not items:
         return ""
+
     displayed = items[:limit]
     remainder = len(items) - len(displayed)
     bullet = LIST_ICONS.get(title, "•")
+
     lines = "\n".join(f"{bullet} {item}" for item in displayed)
     if remainder > 0:
-        lines += f"\n{bullet} and {remainder} more..."
+        lines += f"\n{bullet} i {remainder} więcej…"
     return f"\n*{title}*\n{lines}\n"
 
 
@@ -67,7 +131,7 @@ async def send_scrape_message(
     duration = end_time - start_time
     clean_duration = str(duration).split(".")[0]
     time_format = "%Y-%m-%d %H:%M:%S"
-    lines = []
+    lines: List[str] = []
     lines.append(f"🎯 *{scraper_name}* — {status}")
     lines.append("")
     lines.append(f"🟢 Start: *{start_time.strftime(time_format)}*")
@@ -76,41 +140,16 @@ async def send_scrape_message(
     if notes:
         lines.append("")
         lines.append(f"💬 {notes}")
-    lines.append("")
-    STAT_ICONS: dict[str, str] = {
-        "Total games": "🎲",
-        "Added": "🧺",
-        "Updated": "♻️",
-        "Removed": "🗑️",
-        "Total accessories": "🪄",
-        "Hot games": "🔥",
-        "Hot persons": "🌟",
-        "Hash skips": "🚫",
-        "Detail hash updates": "🔍",
-        "Plays processed": "📊",
-        "New plays": "🆕",
-        "Updated plays": "🔄",
-        # Etykiety dziennego podsumowania — wspólne dla trzech serwisów.
-        "Dodane": "🧺",
-        "Zaktualizowane": "♻️",
-        "Usunięte": "🧹",
-        "Pominięte": "🗑️",
-        "Bez koszulek": "🟡",
-        "Oznaczone jako nieaktywne": "💤",
-        "Pobrane okładki": "🖼️",
-        "Przetworzone": "🎯",
-        "W katalogu": "📦",
-        "Błędy": "⚠️",
-        "Nieudane przebiegi": "❌",
-    }
-    lines.append("*Stats*")
-    stats_lines = []
-    for key, value in stats.items():
-        icon = STAT_ICONS.get(key, "•")
-        stats_lines.append(f"{icon} {key}: *{value}*")
+    # Nagłówek tylko wtedy, gdy jest co pod nim postawić. Wcześniej dopisywał
+    # się zawsze i przy dobie bez zmian wiadomość kończyła się samym „Stats".
+    stats_lines = [
+        f"{STAT_ICONS.get(key, '•')} {key}: *{value}*" for key, value in stats.items()
+    ]
     if stats_lines:
+        lines.append("")
+        lines.append("*Stats*")
         lines.extend(stats_lines)
-    lines.append("")
+        lines.append("")
     for title, items in lists.items():
         list_block = _format_list(title, items)
         if list_block:

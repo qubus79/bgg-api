@@ -4,7 +4,7 @@ from app.database import AsyncSessionLocal
 from app.models.bgg_hotness import BGGHotGame, BGGHotPerson
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, text
-from app.utils.logging import log_info, log_success, log_warning, log_error
+from app.utils.logging import log_info, log_success
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 

@@ -32,7 +32,7 @@ from sqlalchemy import text
 
 from app.database import AsyncSessionLocal
 from app.utils.logging import log_error, log_info
-from app.utils.telegram_notify import send_job_failure
+from app.utils.telegram_notify import SERVICE_NAME, send_job_failure
 
 # Etykiety etapów — serwer wysyła gotowy tekst, aplikacja renderuje go dosłownie,
 # więc nowy etap nie wymaga wydania nowej wersji aplikacji.
@@ -76,17 +76,23 @@ CREATE TABLE IF NOT EXISTS job_runs (
 )
 """
 
+# Trzy serwisy dzielą jedną bazę, a nazwa zadania nie wystarcza do ich
+# rozróżnienia: `daily_summary` rejestrują wszystkie trzy. Kolumna dokładana
+# idempotentnie, tak samo jak sama tabela — żadne narzędzia migracyjne nie są
+# potrzebne, a bgg-api ich nie ma.
+_ADD_SERVICE_COLUMN_SQL = "ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS service VARCHAR"
+
 _CREATE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS ix_job_runs_job_started ON job_runs (job, started_at DESC)"
 )
 
 _UPSERT_SQL = """
 INSERT INTO job_runs (
-    job, run_id, state, trigger, stage, stage_detail, stage_index, stage_count,
+    job, service, run_id, state, trigger, stage, stage_detail, stage_index, stage_count,
     progress_current, progress_total, progress_unit, counters,
     started_at, finished_at, result, error, updated_at
 ) VALUES (
-    :job, :run_id, :state, :trigger, :stage, :stage_detail, :stage_index, :stage_count,
+    :job, :service, :run_id, :state, :trigger, :stage, :stage_detail, :stage_index, :stage_count,
     :progress_current, :progress_total, :progress_unit, CAST(:counters AS JSONB),
     :started_at, :finished_at, CAST(:result AS JSONB), :error, now()
 )
@@ -262,10 +268,6 @@ def register(
     _FUNCS[name] = fn
     if last_update_fn is not None:
         _LAST_UPDATE_FNS[name] = last_update_fn
-
-
-def known_jobs() -> list[str]:
-    return list(_JOBS.keys())
 
 
 async def _call(fn: Callable[..., Any], ctx: JobContext, kwargs: dict) -> Any:
@@ -518,6 +520,7 @@ async def _flush(record: JobRecord) -> None:
     record.dirty = False
     params = {
         "job": record.job,
+        "service": SERVICE_NAME,
         "run_id": record.run_id,
         "state": record.state,
         "trigger": record.trigger,
@@ -543,6 +546,13 @@ async def _flush(record: JobRecord) -> None:
 
 
 async def _prune(name: str) -> None:
+    """Zostawia najnowsze `KEEP_RUNS_PER_JOB` przebiegów tego zadania.
+
+    Zawężone do serwisu, bo nazwa zadania nie zawsze go identyfikuje:
+    `daily_summary` rejestrują wszystkie trzy usługi, więc bez tego budżet stu
+    wierszy dzieliłby się na trzy i historia byłaby krótsza, niż zakłada
+    dzienne podsumowanie.
+    """
     record = _JOBS.get(name)
     if record is None or not record.persist:
         return
@@ -550,11 +560,13 @@ async def _prune(name: str) -> None:
         async with AsyncSessionLocal() as session:
             await session.execute(
                 text(
-                    "DELETE FROM job_runs WHERE job = :job AND id NOT IN ("
+                    "DELETE FROM job_runs WHERE job = :job "
+                    "  AND coalesce(service, :service) = :service AND id NOT IN ("
                     "  SELECT id FROM job_runs WHERE job = :job "
+                    "    AND coalesce(service, :service) = :service "
                     "  ORDER BY started_at DESC NULLS LAST LIMIT :keep)"
                 ),
-                {"job": name, "keep": KEEP_RUNS_PER_JOB},
+                {"job": name, "service": SERVICE_NAME, "keep": KEEP_RUNS_PER_JOB},
             )
             await session.commit()
     except Exception as exc:  # noqa: BLE001
@@ -580,6 +592,7 @@ async def init_jobs_table() -> None:
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text(_CREATE_TABLE_SQL))
+            await session.execute(text(_ADD_SERVICE_COLUMN_SQL))
             await session.execute(text(_CREATE_INDEX_SQL))
             await session.commit()
 
@@ -591,9 +604,10 @@ async def init_jobs_table() -> None:
                 text(
                     "UPDATE job_runs SET state = 'failed', "
                     "error = 'przerwane: restart serwera', finished_at = now() "
-                    "WHERE state = 'running' AND job = ANY(:jobs)"
+                    "WHERE state = 'running' AND job = ANY(:jobs) "
+                    "  AND coalesce(service, :service) = :service"
                 ),
-                {"jobs": known},
+                {"jobs": known, "service": SERVICE_NAME},
             )
             await session.commit()
 
@@ -603,10 +617,11 @@ async def init_jobs_table() -> None:
                         "SELECT DISTINCT ON (job) job, run_id, state, trigger, stage, "
                         "stage_detail, stage_index, stage_count, progress_current, "
                         "progress_total, progress_unit, counters, started_at, finished_at, "
-                        "result, error FROM job_runs WHERE job = ANY(:jobs) "
+                        "result, error FROM job_runs "
+                        "WHERE job = ANY(:jobs) AND coalesce(service, :service) = :service "
                         "ORDER BY job, started_at DESC NULLS LAST"
                     ),
-                    {"jobs": known},
+                    {"jobs": known, "service": SERVICE_NAME},
                 )
             ).mappings().all()
 

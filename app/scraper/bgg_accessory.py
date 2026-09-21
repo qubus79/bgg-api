@@ -343,7 +343,13 @@ async def fetch_bgg_accessories(username: str, ctx=None) -> None:
             accessories_data, collection_ids, hash_cache
         )
         ctx.set_progress(len(accessories_data))
-        ctx.set_counters(inserted=inserted, updated=updated, removed=deleted, skipped=skipped)
+        ctx.set_counters(
+            total=len(accessories_data),
+            inserted=inserted,
+            updated=updated,
+            removed=deleted,
+            skipped=skipped,
+        )
 
     log_success(
         f"🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych (inserted={inserted}, updated={updated}, removed={deleted})"
