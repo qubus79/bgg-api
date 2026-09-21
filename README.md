@@ -14,7 +14,7 @@ Dane przechowywane są w bazie PostgreSQL i mogą być wykorzystywane przez apli
 - ✅ Import gier z kolekcji BGG (w tym statystyki, mechaniki, czas gry, itd.)
 - ✅ Import akcesoriów z BGG
 - ✅ Import „Hotness” – osobno dla gier i osób (autorzy, ilustratorzy itd.)
-- ✅ Harmonogram (scheduler) aktualizacji danych (co 6h)
+- ✅ Harmonogram (scheduler) aktualizacji danych (kolekcja co 3h, akcesoria co 6h, hotness co 6h, plays co 6h)
 - ✅ REST API z punktami `/health`, `/stats`, `/update`, `/` dla każdego zasobu
 - ✅ Gotowy do deploymentu na Railway, Render lub lokalnie via Docker
 
@@ -116,3 +116,16 @@ Projekt prywatny rozwijany przez [Paweł Nocznicki](mailto:pawel@nocznicki.pl) n
 ## 🛡 Licencja
 
 MIT License – możesz używać, kopiować, modyfikować i wykorzystywać we własnych projektach.
+
+## 🔔 Powiadomienia na Telegram
+
+- Wiadomość przychodzi **tylko przy awarii** — jedna na każde nieudane zadanie,
+  bez dławienia powtórek. Dotyczy tak samo harmonogramu, jak ręcznego uruchomienia
+  z aplikacji.
+- Raz na dobę, o **23:00 czasu polskiego**, idzie **osobne podsumowanie każdego syncu**:
+  co się w ciągu dnia zmieniło (dodane / zaktualizowane / usunięte), ile było
+  przebiegów i ile z nich padło. Liczby biorą się z tabeli `job_runs`.
+- Zmienne: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_NOTIFY_SUCCESS`
+  (domyślnie `false` — `true` przywraca wiadomość po każdym udanym przebiegu),
+  `TELEGRAM_DAILY_SUMMARY` (domyślnie `true`), `TELEGRAM_SUMMARY_HOUR` (domyślnie `23`).
+- Podsumowanie da się odpalić na żądanie: `POST /jobs/daily_summary/run`.

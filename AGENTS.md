@@ -48,6 +48,9 @@ Expect production config to be set via Railway environment variables.
 
 Key environment variables used in code:
 - DATABASE_URL (SQLAlchemy async connection string)
+- TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (notifications)
+- TELEGRAM_NOTIFY_SUCCESS (default false; true restores a message after every run)
+- TELEGRAM_DAILY_SUMMARY (default true) / TELEGRAM_SUMMARY_HOUR (default 23, Europe/Warsaw)
 - BGG_USERNAME / BGG_PASSWORD (private collection access)
 - BGG_API_TOKEN (optional for BGG XML API)
 - BGG_PRIVATE_USER_ID
@@ -114,6 +117,23 @@ Logging:
 Schedulers:
 - Schedulers are initialized on startup in app/main.py.
 - Intervals are configured in app/tasks and often rely on env vars.
+- Current cadence: collection every 3h, accessories every 6h, hotness (games and
+  persons) every 6h, plays every BGG_PLAYS_SYNC_HOURS (default 6).
+- A daily summary job fires at 23:00 Europe/Warsaw and sends one Telegram message
+  per sync, built from the job_runs table (app/tasks/daily_summary.py).
+
+Telegram notifications:
+- Success messages are silent by default; only failures are sent, one per failure,
+  with no throttling. TELEGRAM_NOTIFY_SUCCESS=true restores the old behaviour.
+- Every job failure is notified from a single place: _notify_failure in app/jobs.py,
+  covering scheduled and manual runs alike.
+- app/jobs.py and app/utils/daily_summary.py are shared copies kept byte-identical
+  across games-api / bgg-api / sleeves-api (except SUMMARY_JOBS); change them in one
+  repo and copy the file to the others.
+- The hotness scrapers re-raise on failure instead of returning []; update_hot_games
+  clears the table before inserting, so swallowing the error used to wipe the data
+  and still record a success.
+- Runtime dependency added for the summary: tzdata (zoneinfo needs a timezone database).
 
 Data integrity:
 - Be careful with migration-like changes; this repo does not include

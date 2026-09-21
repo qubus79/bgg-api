@@ -3,9 +3,16 @@
 
 from app import jobs
 from app.tasks import bgg_accessory, bgg_game, bgg_hotness, bgg_plays
+from app.utils.daily_summary import run_daily_summary
 
 
 def register_jobs() -> None:
+    jobs.register(
+        "daily_summary",
+        run_daily_summary,
+        label="Podsumowanie dnia",
+        stage_count=1,
+    )
     jobs.register(
         "bgg_collection",
         bgg_game.update_bgg_collection,

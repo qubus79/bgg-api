@@ -3,8 +3,8 @@
 
 Plik jest WSPÓLNY dla games-api / bgg-api / sleeves-api — trzymany jako kopia
 w każdym repo (brak infrastruktury pakietowej). Zależy wyłącznie od
-`app.database.AsyncSessionLocal` oraz `app.utils.logging.{log_info, log_error}`,
-które istnieją w każdym z tych repo.
+`app.database.AsyncSessionLocal`, `app.utils.logging.{log_info, log_error}` oraz
+`app.utils.telegram_notify.send_job_failure`, które istnieją w każdym z tych repo.
 
 Idea:
 - `register(name, fn)` — rejestruje funkcję aktualizującą,
@@ -32,6 +32,7 @@ from sqlalchemy import text
 
 from app.database import AsyncSessionLocal
 from app.utils.logging import log_error, log_info
+from app.utils.telegram_notify import send_job_failure
 
 # Etykiety etapów — serwer wysyła gotowy tekst, aplikacja renderuje go dosłownie,
 # więc nowy etap nie wymaga wydania nowej wersji aplikacji.
@@ -47,7 +48,10 @@ STAGE_LABELS: dict[str, str] = {
 }
 
 FLUSH_INTERVAL_SECONDS = 5.0
-KEEP_RUNS_PER_JOB = 20
+# Dzienne podsumowanie liczy się z `job_runs`, więc historia musi sięgać
+# co najmniej doby wstecz. 100 wierszy na zadanie to przy najczęstszym syncu
+# (co 3 h) ponad 12 dni zapasu.
+KEEP_RUNS_PER_JOB = 100
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS job_runs (
@@ -368,6 +372,8 @@ async def _runner(name: str, record: JobRecord, kwargs: dict) -> None:
         record.dirty = True
         flusher.cancel()
         await _flush(record)
+        if record.state == "failed":
+            await _notify_failure(record)
         await _prune(name)
 
 
@@ -462,6 +468,28 @@ async def status_all() -> list[dict]:
 
 
 # --- Trwałość ---------------------------------------------------------------
+
+async def _notify_failure(record: JobRecord) -> None:
+    """Wysyła powiadomienie o nieudanym zadaniu.
+
+    To JEDYNE miejsce, w którym awaria trafia na Telegram — łapie zadania
+    wszystkich trzech serwisów, tak samo z harmonogramu jak z aplikacji.
+    Bez dławienia: każda awaria to osobna wiadomość.
+
+    Nieudana wysyłka nie może wywrócić zadania ani nadpisać pierwotnego błędu,
+    stąd własny `except`.
+    """
+    try:
+        await send_job_failure(
+            record.job,
+            record.error or "brak szczegółów",
+            trigger=record.trigger or "?",
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+        )
+    except Exception as exc:  # noqa: BLE001 — powiadomienie jest dodatkiem, nie zadaniem
+        log_error(f"⚠️ Nie udało się powiadomić o awarii job '{record.job}': {exc}")
+
 
 async def _flush_loop(record: JobRecord) -> None:
     """Zapisuje stan do bazy najwyżej co FLUSH_INTERVAL_SECONDS (nie co grę)."""

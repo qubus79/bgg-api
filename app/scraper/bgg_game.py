@@ -440,7 +440,11 @@ async def _persist_games(
 # PUBLIC ENTRY POINT
 # =============================================================================
 
-async def fetch_bgg_collection(username: str) -> None:
+async def fetch_bgg_collection(username: str, ctx=None) -> None:
+    if ctx is None:
+        from app import jobs
+        ctx = jobs.NULL_CTX
+
     log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
 
     collection_url = f"{BGG_XML_BASE}/collection?username={username}&stats=1"
@@ -525,6 +529,12 @@ async def fetch_bgg_collection(username: str) -> None:
         )
 
     total_hash_skips = hash_skips + detail_hash_skips
+    ctx.set_counters(
+        inserted=inserted,
+        updated=updated,
+        removed=deleted,
+        skipped=total_hash_skips,
+    )
     summary = (
         f"{ANSI_GREEN}🎉 Kolekcja BGG zsynchronizowana{ANSI_RESET} "
         f"(inserted={inserted}, updated={updated}, removed={deleted}) | "

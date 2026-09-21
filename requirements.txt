@@ -16,3 +16,7 @@ colorama
 
 # Optional (enables Redis-backed session/cache; code should fall back to in-memory if REDIS_URL is not set)
 redis>=4.5
+
+# Baza stref czasowych dla zoneinfo — dzienne podsumowanie idzie o 23:00
+# czasu polskiego, a obraz kontenera nie musi mieć systemowego tzdata.
+tzdata

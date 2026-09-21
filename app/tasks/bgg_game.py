@@ -22,9 +22,9 @@ async def init_bgg_db():
 
 
 async def setup_scheduler():
-    log_info("Scheduler started. Updating BGG collection every 2 hours.")
+    log_info("Scheduler started. Updating BGG collection every 3 hours.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(_scheduled_collection, IntervalTrigger(hours=2), id="update_bgg_collection_job", replace_existing=True)
+    scheduler.add_job(_scheduled_collection, IntervalTrigger(hours=3), id="update_bgg_collection_job", replace_existing=True)
     scheduler.start()
 
 
@@ -48,7 +48,7 @@ async def update_bgg_collection(ctx=jobs.NULL_CTX) -> dict:
 
     ctx.set_stage("fetch_remote", detail=f"kolekcja {USERNAME}", index=1, count=2)
     log_info("Rozpoczynam pobieranie danych z BGG kolekcji...")
-    await fetch_bgg_collection(USERNAME)
+    await fetch_bgg_collection(USERNAME, ctx=ctx)
 
     ctx.set_stage("finalizing", index=2, count=2)
 

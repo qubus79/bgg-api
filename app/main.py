@@ -20,6 +20,7 @@ from app.models.bgg_hotness import BGGHotPerson
 from app.tasks.bgg_game import setup_scheduler
 from app.tasks.bgg_accessory import setup_accessory_scheduler
 from app.tasks.bgg_hotness import setup_hotness_scheduler
+from app.tasks.daily_summary import setup_daily_summary_scheduler
 from app.tasks.bgg_plays import setup_plays_scheduler
 from app.utils.logging import log_info
 
@@ -40,6 +41,7 @@ async def startup_event():
     await setup_accessory_scheduler()
     await setup_hotness_scheduler()
     await setup_plays_scheduler()
+    await setup_daily_summary_scheduler()
     log_info("✅ Application started and all schedulers initialized.")
 
 # Rejestracja routerów

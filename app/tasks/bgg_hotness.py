@@ -96,10 +96,10 @@ async def get_hotness_person_stats():
 # ---------------- SCHEDULER ----------------
 
 async def setup_hotness_scheduler():
-    log_info("🕒 Scheduler started: Hotness aktualizuje się co 4 godziny.")
+    log_info("🕒 Scheduler started: Hotness aktualizuje się co 6 godzin.")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(_scheduled_hot_games, IntervalTrigger(hours=4), id="update_hot_games", replace_existing=True)
-    scheduler.add_job(_scheduled_hot_persons, IntervalTrigger(hours=4), id="update_hot_persons", replace_existing=True)
+    scheduler.add_job(_scheduled_hot_games, IntervalTrigger(hours=6), id="update_hot_games", replace_existing=True)
+    scheduler.add_job(_scheduled_hot_persons, IntervalTrigger(hours=6), id="update_hot_persons", replace_existing=True)
     scheduler.start()
     log_success("✅ Hotness scheduler uruchomiony")
 

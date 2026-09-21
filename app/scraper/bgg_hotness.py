@@ -261,11 +261,15 @@ async def fetch_bgg_hotness_games(ctx=None) -> List[Dict[str, Any]]:
                 "BGG hotness games", "✅ SUCCESS", start_time, end_time, stats, details, notes=top_game_note
             )
             return games
+    # Błąd musi POLECIEĆ dalej, a nie skończyć się pustą listą: `update_hot_games`
+    # kasuje tabelę przed zapisem, więc zwrócenie [] przy awarii BGG czyściło dane
+    # i zapisywało zadanie jako udane.
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness gier: {exc}")
+        raise
     except Exception as exc:
         log_error(f"❌ Nieoczekiwany błąd przy hotness games: {exc}")
-    return []
+        raise
 
 
 # =============================================================================
@@ -315,8 +319,12 @@ async def fetch_bgg_hotness_persons(ctx=None) -> List[Dict[str, Any]]:
                 "BGG hotness persons", "✅ SUCCESS", start_time, end_time, stats, details, notes=top_person_note
             )
             return persons
+    # Błąd musi POLECIEĆ dalej, a nie skończyć się pustą listą: `update_hot_persons`
+    # kasuje tabelę przed zapisem, więc zwrócenie [] przy awarii BGG czyściło dane
+    # i zapisywało zadanie jako udane.
     except (httpx.HTTPError, ET.ParseError) as exc:
         log_error(f"❌ Błąd podczas pobierania hotness osób: {exc}")
+        raise
     except Exception as exc:
         log_error(f"❌ Nieoczekiwany błąd przy hotness persons: {exc}")
-    return []
+        raise
