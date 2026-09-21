@@ -464,7 +464,8 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
         tasks = []
-        hash_skips = 0
+        # Gry pominięte dzięki zgodnemu hashowi kolekcji — czyli te, dla których
+        # nie trzeba było ruszać /thing. Jedna gra = jeden skip.
         hash_skips = 0
 
         for idx, (bgg_id, item) in enumerate(collection_items, start=1):
@@ -483,7 +484,6 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
                         f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — hash kolekcji ({collection_hash[:8]}) taki sam jak w Redisie, pomijam detail"
                     )
                     should_fetch = False
-                    hash_skips += 1
                     hash_skips += 1
 
             if should_fetch:

@@ -99,7 +99,7 @@ async def send_scrape_message(
         "Oznaczone jako nieaktywne": "💤",
         "Pobrane okładki": "🖼️",
         "Przetworzone": "🎯",
-        "Pozycji łącznie": "📦",
+        "W katalogu": "📦",
         "Błędy": "⚠️",
         "Nieudane przebiegi": "❌",
     }

@@ -59,22 +59,36 @@ SUMMARY_JOBS: Dict[str, Tuple[str, bool]] = {
 # Wiersze przepisane przy starcie procesu — redeploy nie jest awarią.
 RESTART_ERROR = "przerwane: restart serwera"
 
-# Zadania nazywają to samo różnie; mapa daje jedną etykietę na jedno pojęcie.
-# Klucz spoza mapy jest pomijany, a nie zgadywany — lepiej nie pokazać liczby
+# Zadania nazywają to samo różnie; mapy dają jedną etykietę na jedno pojęcie.
+# Klucz spoza map jest pomijany, a nie zgadywany — lepiej nie pokazać liczby
 # niż pokazać ją pod złą nazwą.
-_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
+#
+# Podział na dwie mapy jest istotny, bo liczniki mówią o dwóch różnych rzeczach:
+#
+# PRZYROST to zdarzenia — ile gier doszło, ile zniknęło. Sumowanie ich przez dobę
+# jest dokładnie tym, czego się oczekuje.
+#
+# STAN to rozmiar katalogu. Sumowanie go nie znaczy nic: kolekcja 50 gier
+# zsynchronizowana trzy razy to nadal 50 gier, a nie 150. Bierzemy więc wartość
+# z ostatniego przebiegu doby.
+_FLOW_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("Dodane", ("added", "inserted")),
     ("Zaktualizowane", ("updated",)),
     ("Usunięte", ("removed", "deleted")),
-    ("Pominięte", ("skipped", "unchanged")),
-    ("Bez koszulek", ("no_sleeves",)),
     ("Oznaczone jako nieaktywne", ("marked_inactive",)),
     ("Pobrane okładki", ("covers_fetched",)),
-    ("Przetworzone", ("processed_games", "games", "scanned")),
-    ("Sparsowane", ("parsed",)),
-    ("Pozycji łącznie", ("total",)),
     ("Błędy", ("errors", "failed")),
 ]
+
+_STOCK_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
+    ("W katalogu", ("total", "processed_games", "games", "scanned")),
+    ("Sparsowane", ("parsed",)),
+]
+
+# Świadomie nieraportowane: `skipped`, `unchanged`, `no_sleeves`.
+# „Ile się NIE zmieniło" przy ośmiu przebiegach na dobę to sama w sobie liczba
+# bez treści, a zsumowana była głównym źródłem mylących wartości w wiadomości.
+# Liczniki dalej istnieją — widać je w logach i w panelu aktualizacji.
 
 
 def day_window(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:
@@ -114,26 +128,65 @@ async def already_sent(within_hours: int = 12) -> bool:
         return result.first() is not None
 
 
-def _sum_counters(runs: List[Dict[str, Any]]) -> Dict[str, int]:
-    """Sumuje liczniki z całej doby, łącząc `counters` i `result`."""
+def _counter_values(run: Dict[str, Any]) -> Dict[str, int]:
+    """Liczniki jednego przebiegu, z `counters` i `result` razem."""
+    values: Dict[str, int] = {}
+    for source in (run.get("counters"), run.get("result")):
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            # `True` jest w Pythonie liczbą całkowitą, a statusem, nie licznikiem.
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            values[key] = value
+    return values
+
+
+def _sum_flow(runs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Sumuje zdarzenia z całej doby."""
     totals: Dict[str, int] = {}
     for run in runs:
-        for source in (run.get("counters"), run.get("result")):
-            if not isinstance(source, dict):
-                continue
-            for key, value in source.items():
-                if isinstance(value, bool) or not isinstance(value, int):
-                    continue
-                totals[key] = totals.get(key, 0) + value
+        for key, value in _counter_values(run).items():
+            totals[key] = totals.get(key, 0) + value
     return totals
 
 
-def _stats_block(totals: Dict[str, int], errors: int) -> Dict[str, int]:
+def _last_stock(runs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Bierze rozmiary z ostatniego przebiegu, który je w ogóle podał.
+
+    Nie z ostatniego przebiegu w ogóle: nieudany przebieg często nie zdąży
+    policzyć katalogu, a wtedy rozmiar wyszedłby zerowy albo zniknąłby z
+    wiadomości, choć katalog stoi nietknięty.
+    """
+    stock: Dict[str, int] = {}
+    # Przebiegi bez `started_at` idą na początek, osobno — nie da się ich
+    # posortować razem z datowanymi bez porównywania None z datą.
+    dated = [r for r in runs if r.get("started_at") is not None]
+    undated = [r for r in runs if r.get("started_at") is None]
+
+    for run in undated + sorted(dated, key=lambda r: r["started_at"]):
+        for key, value in _counter_values(run).items():
+            stock[key] = value
+    return stock
+
+
+def _stats_block(
+    flow: Dict[str, int], stock: Dict[str, int], errors: int
+) -> Dict[str, int]:
+    """Stan najpierw — to on mówi, o jakim katalogu w ogóle mowa."""
     stats: Dict[str, int] = {}
-    for label, keys in _ALIASES:
-        value = sum(totals.get(key, 0) for key in keys)
+
+    for label, keys in _STOCK_ALIASES:
+        for key in keys:
+            if stock.get(key):
+                stats[label] = stock[key]
+                break
+
+    for label, keys in _FLOW_ALIASES:
+        value = sum(flow.get(key, 0) for key in keys)
         if value:
             stats[label] = value
+
     if errors:
         stats["Nieudane przebiegi"] = errors
     return stats
@@ -246,7 +299,7 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
 
         real = [r for r in job_runs if (r.get("error") or "") != RESTART_ERROR]
         failed = sum(1 for r in real if r.get("state") == "failed")
-        stats = _stats_block(_sum_counters(real), failed)
+        stats = _stats_block(_sum_flow(real), _last_stock(real), failed)
 
         await send_scrape_message(
             label,
