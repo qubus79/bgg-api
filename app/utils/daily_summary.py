@@ -9,6 +9,11 @@ Skąd dane: tabela `job_runs`, którą `app/jobs.py` i tak zapisuje po każdym
 przebiegu. Nie ma tu żadnej nowej tabeli ani kolumny — bgg-api nie ma narzędzi
 migracyjnych, więc schemat zostaje nietknięty.
 
+UWAGA: trzy serwisy dzielą JEDNĄ bazę na Railway, więc `job_runs` zawiera
+przebiegi wszystkich trzech. Dlatego zarówno zapytanie o przebiegi, jak
+i blokada powtórzeń muszą być zawężone do własnych zadań — inaczej każdy serwis
+raportuje cudze i jedno wywołanie daje trzy komplety wiadomości.
+
 Dlaczego osobna wiadomość na sync, a nie jedna zbiorcza: każdy sync ma inne
 liczniki i inną historię, a w jednej wiadomości utonęłyby, nie mieszcząc się
 przy okazji w limicie 4096 znaków Telegrama.
@@ -47,7 +52,9 @@ SUMMARY_ENABLED = os.getenv("TELEGRAM_DAILY_SUMMARY", "true").lower() == "true"
 # zależy od flagi na Railway — oznaczanie ich jako awarii sześć dni w tygodniu
 # nauczyłoby tylko ignorować ostrzeżenia.
 #
-# Zadanie spoza listy dostaje wiadomość tylko wtedy, gdy faktycznie przebiegło.
+# Ta lista jest JEDYNYM źródłem prawdy o tym, co serwis opisuje. Nowe zadanie
+# trzeba tu dopisać — inaczej po prostu zamilknie. W games-api pilnuje tego test
+# `test_lista_pokrywa_wszystkie_zarejestrowane_zadania`.
 SUMMARY_JOBS: Dict[str, Tuple[str, bool]] = {
     "bgg_collection": ("BGG collection sync", True),
     "bgg_plays": ("BGG plays sync", True),
@@ -98,32 +105,48 @@ def day_window(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:
 
 
 async def _fetch_runs(since: datetime) -> List[Dict[str, Any]]:
+    """Przebiegi WŁASNYCH zadań z okna doby.
+
+    Zawężenie do `SUMMARY_JOBS` jest konieczne, nie kosmetyczne: trzy serwisy
+    dzielą jedną bazę, więc bez niego każdy widziałby przebiegi pozostałych
+    dwóch i opisywał cudze zadania.
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text(
                 "SELECT job, state, trigger, counters, result, error, "
                 "       started_at, finished_at "
-                "FROM job_runs WHERE started_at >= :since ORDER BY started_at"
+                "FROM job_runs "
+                "WHERE started_at >= :since AND job = ANY(:jobs) "
+                "ORDER BY started_at"
             ),
-            {"since": since},
+            {"since": since, "jobs": list(SUMMARY_JOBS)},
         )
         return [dict(row) for row in result.mappings()]
 
 
 async def already_sent(within_hours: int = 12) -> bool:
-    """Czy podsumowanie poszło niedawno.
+    """Czy podsumowanie TEGO serwisu poszło niedawno.
 
     Zabezpiecza przed drugą wysyłką, gdy proces wstanie ponownie tuż po 23:00 —
     harmonogram żyje w procesie web i restartuje się przy każdym deployu.
+
+    Filtr po nazwie serwisu jest istotny: tabela jest wspólna dla trzech usług,
+    a wszystkie zapisują przebiegi pod tą samą nazwą `daily_summary`. Bez niego
+    pierwsza, która zdąży, uciszyłaby dwie pozostałe.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text(
                 "SELECT 1 FROM job_runs "
                 "WHERE job = 'daily_summary' AND state = 'succeeded' "
+                "  AND result->>'service' = :service "
                 "  AND finished_at >= :since LIMIT 1"
             ),
-            {"since": datetime.now(TIMEZONE) - timedelta(hours=within_hours)},
+            {
+                "service": SERVICE_NAME,
+                "since": datetime.now(TIMEZONE) - timedelta(hours=within_hours),
+            },
         )
         return result.first() is not None
 
@@ -275,9 +298,10 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
             continue
         by_job.setdefault(run["job"], []).append(run)
 
+    # Opisujemy WYŁĄCZNIE własne zadania. Dopisywanie tu wszystkiego, co znalazło
+    # się w bazie, sprawiało, że każdy serwis raportował także cudze zadania —
+    # jedno tapnięcie dawało trzy komplety wiadomości.
     names: Dict[str, Tuple[str, bool]] = dict(SUMMARY_JOBS)
-    for job in by_job:
-        names.setdefault(job, (job, False))
 
     sent = 0
     for job, (label, expect_daily) in names.items():
@@ -314,7 +338,14 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
         sent += 1
 
     log_info(f"📊 {SERVICE_NAME}: wysłano {sent} podsumowań dnia.")
-    return {"status": "ok", "messages": sent, "jobs": len(names)}
+    # `service` nie jest ozdobą — po nim `already_sent` rozpoznaje własne wpisy
+    # we wspólnej tabeli.
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "messages": sent,
+        "jobs": len(names),
+    }
 
 
 async def schedule_entry() -> None:

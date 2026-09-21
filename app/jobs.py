@@ -567,17 +567,33 @@ async def init_jobs_table() -> None:
     Każdy wiersz zostawiony w stanie 'running' oznacza, że proces padł w trakcie
     (redeploy Railway) — przepisujemy go na 'failed', inaczej aplikacja
     odpytywałaby w nieskończoność o zadanie, które już nie istnieje.
+
+    WYŁĄCZNIE własne zadania. Trzy serwisy dzielą jedną bazę, więc bez tego
+    ograniczenia redeploy jednego oznaczałby jako „przerwane" zadania dwóch
+    pozostałych — także te, które w tej chwili spokojnie biegną.
     """
+    # Rejestr jest wypełniony, bo `register_jobs()` woła się przed tą funkcją
+    # we wszystkich trzech repo. Gdyby jednak był pusty, tabela i tak ma powstać
+    # — samo porządkowanie zostaje wtedy pominięte.
+    known = list(_JOBS)
+
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text(_CREATE_TABLE_SQL))
             await session.execute(text(_CREATE_INDEX_SQL))
+            await session.commit()
+
+            if not known:
+                log_error("⚠️ init_jobs_table(): brak zarejestrowanych zadań, pomijam porządki.")
+                return
+
             await session.execute(
                 text(
                     "UPDATE job_runs SET state = 'failed', "
                     "error = 'przerwane: restart serwera', finished_at = now() "
-                    "WHERE state = 'running'"
-                )
+                    "WHERE state = 'running' AND job = ANY(:jobs)"
+                ),
+                {"jobs": known},
             )
             await session.commit()
 
@@ -587,8 +603,10 @@ async def init_jobs_table() -> None:
                         "SELECT DISTINCT ON (job) job, run_id, state, trigger, stage, "
                         "stage_detail, stage_index, stage_count, progress_current, "
                         "progress_total, progress_unit, counters, started_at, finished_at, "
-                        "result, error FROM job_runs ORDER BY job, started_at DESC NULLS LAST"
-                    )
+                        "result, error FROM job_runs WHERE job = ANY(:jobs) "
+                        "ORDER BY job, started_at DESC NULLS LAST"
+                    ),
+                    {"jobs": known},
                 )
             ).mappings().all()
 

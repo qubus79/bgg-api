@@ -130,6 +130,12 @@ Telegram notifications:
 - app/jobs.py and app/utils/daily_summary.py are shared copies kept byte-identical
   across games-api / bgg-api / sleeves-api (except SUMMARY_JOBS); change them in one
   repo and copy the file to the others.
+- The three services share ONE Postgres on Railway, so job_runs holds every service's
+  runs. The summary query, its repeat guard and init_jobs_table() are all scoped to
+  this service's own jobs. Without that scoping each service reported the others'
+  jobs, and a redeploy here marked other services' running jobs as interrupted.
+- SUMMARY_JOBS is the only source of truth for what this service reports: a registered
+  job that is missing from it goes silent. Add every new job to the list.
 - The hotness scrapers re-raise on failure instead of returning []; update_hot_games
   clears the table before inserting, so swallowing the error used to wipe the data
   and still record a success.
