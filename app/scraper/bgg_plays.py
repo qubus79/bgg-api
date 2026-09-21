@@ -309,7 +309,7 @@ async def update_bgg_plays_from_collection(ctx=None) -> Dict[str, Any]:
 
         # Postęp per gra — to najdłuższy etap (pauza ~1,2 s na grę i na stronę),
         # więc aplikacja musi widzieć „312 z 847" i nazwę aktualnej gry.
-        ctx.set_stage("fetch_remote", total=games_total, unit="gier", index=1, count=2)
+        ctx.set_stage("fetch_remote", total=games_total, unit="games", index=1, count=2)
 
         async def _tracked(idx: int, bgg_id: int, title: str) -> Dict[str, Any]:
             result = await _sync_game_plays(

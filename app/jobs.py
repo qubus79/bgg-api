@@ -36,15 +36,18 @@ from app.utils.telegram_notify import SERVICE_NAME, send_job_failure
 
 # Etykiety etapów — serwer wysyła gotowy tekst, aplikacja renderuje go dosłownie,
 # więc nowy etap nie wymaga wydania nowej wersji aplikacji.
+#
+# PO ANGIELSKU, bo trafiają prosto na ekran aplikacji, a ten jest angielski.
+# Logi serwera zostają po polsku, jak reszta tego repozytorium.
 STAGE_LABELS: dict[str, str] = {
-    "queued": "W kolejce",
-    "starting": "Rozpoczynanie",
-    "fetch_catalogue": "Pobieranie katalogu",
-    "fetch_details": "Pobieranie szczegółów gier",
-    "fetch_remote": "Pobieranie danych z serwisu",
-    "db_sync": "Zapis do bazy",
-    "finalizing": "Finalizowanie",
-    "done": "Zakończono",
+    "queued": "Queued",
+    "starting": "Starting",
+    "fetch_catalogue": "Fetching catalogue",
+    "fetch_details": "Fetching game details",
+    "fetch_remote": "Fetching remote data",
+    "db_sync": "Writing to database",
+    "finalizing": "Finalizing",
+    "done": "Done",
 }
 
 FLUSH_INTERVAL_SECONDS = 5.0
@@ -372,7 +375,7 @@ async def _runner(name: str, record: JobRecord, kwargs: dict) -> None:
         log_info(f"✅ Job '{name}' zakończony: {record.result}")
     except asyncio.CancelledError:
         record.state = "failed"
-        record.error = "anulowano"
+        record.error = "cancelled"
         log_error(f"⛔ Job '{name}' anulowany")
     except Exception as exc:  # noqa: BLE001 — awaria zawsze ma wylądować jako 'failed'
         record.state = "failed"
@@ -603,7 +606,7 @@ async def init_jobs_table() -> None:
             await session.execute(
                 text(
                     "UPDATE job_runs SET state = 'failed', "
-                    "error = 'przerwane: restart serwera', finished_at = now() "
+                    "error = 'interrupted: server restart', finished_at = now() "
                     "WHERE state = 'running' AND job = ANY(:jobs) "
                     "  AND coalesce(service, :service) = :service"
                 ),

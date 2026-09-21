@@ -231,7 +231,7 @@ async def fetch_bgg_hotness_games(ctx=None) -> List[Dict[str, Any]]:
             # Szczegóły pobierane sekwencyjnie (HOTNESS_DETAIL_CONCURRENCY=1,
             # pauza ~1,5 s na grę) — to tutaj mija większość czasu, więc
             # raportujemy każdą grę osobno.
-            ctx.set_stage("fetch_details", total=len(base_games), unit="gier", index=2, count=3)
+            ctx.set_stage("fetch_details", total=len(base_games), unit="games", index=2, count=3)
 
             async def _tracked(idx: int, game: Dict[str, Any]) -> Dict[str, Any]:
                 result = await _build_hot_game_payload(client, sem, idx, len(base_games), game)

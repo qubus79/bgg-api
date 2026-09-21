@@ -317,7 +317,7 @@ async def fetch_bgg_accessories(username: str, ctx=None) -> None:
         # Szczegóły pobierane sekwencyjnie (ACCESSORY_DETAIL_CONCURRENCY=1,
         # pauza ~1,5 s na pozycję) — tutaj mija większość czasu, więc
         # raportujemy każde akcesorium osobno.
-        ctx.set_stage("fetch_details", total=len(collection_items), unit="akcesoriów", index=2, count=3)
+        ctx.set_stage("fetch_details", total=len(collection_items), unit="accessories", index=2, count=3)
 
         async def _tracked(idx: int, bgg_id, basic_data):
             result = await _build_accessory_payload(
@@ -338,7 +338,7 @@ async def fetch_bgg_accessories(username: str, ctx=None) -> None:
         hash_cache = await build_hash_cache()
         if hash_cache is None:
             log_info("🗂️ Hash cache Redis nie został skonfigurowany; każdy rekord będzie zapisywany.")
-        ctx.set_stage("db_sync", total=len(accessories_data), unit="akcesoriów", index=3, count=3)
+        ctx.set_stage("db_sync", total=len(accessories_data), unit="accessories", index=3, count=3)
         inserted, updated, deleted, skipped, inserted_titles, updated_titles, deleted_titles, skipped_titles = await _persist_accessories(
             accessories_data, collection_ids, hash_cache
         )
