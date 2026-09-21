@@ -40,15 +40,20 @@ SUMMARY_HOUR = int(os.getenv("TELEGRAM_SUMMARY_HOUR", "23"))
 # Wyłącznik na wypadek, gdyby podsumowania miały chwilowo zamilknąć.
 SUMMARY_ENABLED = os.getenv("TELEGRAM_DAILY_SUMMARY", "true").lower() == "true"
 
-# Zadania, które MAJĄ chodzić z harmonogramu — brak przebiegu to dla nich
-# informacja, a nie cisza. Zadania spoza listy dostają wiadomość tylko wtedy,
-# gdy faktycznie tego dnia przebiegły.
-SUMMARY_JOBS: Dict[str, str] = {
-    "bgg_collection": "BGG collection sync",
-    "bgg_plays": "BGG plays sync",
-    "bgg_accessories": "BGG accessories sync",
-    "bgg_hotness_games": "BGG hotness games",
-    "bgg_hotness_persons": "BGG hotness persons",
+# Zadania objęte podsumowaniem: nazwa w wiadomości + czy MA chodzić codziennie.
+#
+# Flaga ma znaczenie, bo „brak przebiegów" jest alarmem tylko dla zadań
+# chodzących co dobę. Pełny sync premier leci raz w tygodniu, a The Shelf
+# zależy od flagi na Railway — oznaczanie ich jako awarii sześć dni w tygodniu
+# nauczyłoby tylko ignorować ostrzeżenia.
+#
+# Zadanie spoza listy dostaje wiadomość tylko wtedy, gdy faktycznie przebiegło.
+SUMMARY_JOBS: Dict[str, Tuple[str, bool]] = {
+    "bgg_collection": ("BGG collection sync", True),
+    "bgg_plays": ("BGG plays sync", True),
+    "bgg_accessories": ("BGG accessories sync", True),
+    "bgg_hotness_games": ("BGG hotness games", True),
+    "bgg_hotness_persons": ("BGG hotness persons", True),
 }
 
 # Wiersze przepisane przy starcie procesu — redeploy nie jest awarią.
@@ -66,6 +71,7 @@ _ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("Oznaczone jako nieaktywne", ("marked_inactive",)),
     ("Pobrane okładki", ("covers_fetched",)),
     ("Przetworzone", ("processed_games", "games", "scanned")),
+    ("Sparsowane", ("parsed",)),
     ("Pozycji łącznie", ("total",)),
     ("Błędy", ("errors", "failed")),
 ]
@@ -216,19 +222,20 @@ async def run_daily_summary(ctx=None) -> Dict[str, Any]:
             continue
         by_job.setdefault(run["job"], []).append(run)
 
-    names = dict(SUMMARY_JOBS)
+    names: Dict[str, Tuple[str, bool]] = dict(SUMMARY_JOBS)
     for job in by_job:
-        names.setdefault(job, job)
+        names.setdefault(job, (job, False))
 
     sent = 0
-    for job, label in names.items():
+    for job, (label, expect_daily) in names.items():
         job_runs = by_job.get(job, [])
 
         if not job_runs:
-            if job not in SUMMARY_JOBS:
+            # Cisza jest alarmem tylko tam, gdzie przebieg miał być codziennie.
+            # Reszta (tygodniowy pełny sync, zadania zależne od flagi) po prostu
+            # nie dostaje wiadomości.
+            if not expect_daily:
                 continue
-            # Zadanie z harmonogramu, które nie ruszyło ani razu — cisza
-            # harmonogramu jest groźniejsza niż awaria, więc mówimy o niej wprost.
             await send_scrape_message(
                 label, "⚠️ BRAK PRZEBIEGÓW", since, until, {}, {},
                 notes="Zadanie nie uruchomiło się ani razu w ciągu doby.",
