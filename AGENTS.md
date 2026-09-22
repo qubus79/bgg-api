@@ -32,10 +32,13 @@ Linting:
 - Do not invent lint commands. If you add a linter, document it here.
 
 Testing:
-- No tests or test config found (no tests/ directory, pytest.ini, tox.ini, etc.).
-- Do not invent test commands.
+- pytest, tests live in tests/. No pytest.ini or tox.ini — plain `python -m pytest`.
+- app/config imports require DATABASE_URL to be set; any dummy URL works:
+  DATABASE_URL="postgresql+asyncpg://u:p@localhost/db" python -m pytest -q
+- Tests here do not touch the network or a real database. BGG is unreachable
+  from CI, so scraper tests work on recorded response samples.
 
-Single test execution (only if tests are added later):
+Single test execution:
 - pytest tests/test_file.py::test_name
 - pytest -k "test_name"
 Note: These are standard pytest patterns and are not currently configured.

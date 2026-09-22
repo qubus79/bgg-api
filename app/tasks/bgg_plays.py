@@ -7,11 +7,22 @@ from app import jobs
 from app.database import AsyncSessionLocal, engine, Base
 from app.models.bgg_plays import BGGPlay
 from app.scraper.bgg_plays import update_bgg_plays_from_collection
+from app.scraper.bgg_plays_user import update_bgg_plays_for_user
 from app.utils.logging import log_info, log_success
 
 
 # Jak często synchronizować plays (domyślnie co 6h, bo to cięższe niż kolekcja)
 PLAYS_SYNC_HOURS = int(os.getenv("BGG_PLAYS_SYNC_HOURS", "6"))
+
+# Skąd brać rozgrywki:
+#   "user" — jeden dziennik `xmlapi2/plays?username=…`, komplet w kilkunastu
+#            zapytaniach; każdy przebieg pełny, więc widać też edycje
+#            komentarzy przy starych partiach,
+#   "game" — stara ścieżka, zapytanie na każdą grę z kolekcji.
+# Przełącznik zostaje, bo nowe źródło nie niesie trzech pól starego; gdyby
+# okazało się to na żywo dotkliwsze, niż zakładam, powrót to jedna zmienna.
+PLAYS_SOURCE = os.getenv("BGG_PLAYS_SOURCE", "user").strip().lower()
+PLAYS_USERNAME = os.getenv("BGG_USERNAME", "qubus")
 
 
 async def init_plays_db():
@@ -46,15 +57,16 @@ async def get_plays_stats():
 
 
 async def update_bgg_plays(ctx=jobs.NULL_CTX) -> dict:
-    """
-    Sync plays for games that exist in our collection DB (cross-reference by bgg_id).
-    Uses authenticated cookies via existing auth mechanism inside the scraper.
-    """
+    """Synchronizuje rozgrywki. Źródło wybiera `BGG_PLAYS_SOURCE`."""
     log_info("Inicjalizacja bazy BGG Plays...")
     await init_plays_db()
 
-    log_info("Rozpoczynam pobieranie plays z BGG (na podstawie gier w kolekcji DB)...")
-    result = await update_bgg_plays_from_collection(ctx=ctx)
+    if PLAYS_SOURCE == "game":
+        log_info("Rozpoczynam pobieranie plays z BGG (na podstawie gier w kolekcji DB)...")
+        result = await update_bgg_plays_from_collection(ctx=ctx)
+    else:
+        log_info(f"Rozpoczynam pobieranie dziennika rozgrywek BGG ({PLAYS_USERNAME})...")
+        result = await update_bgg_plays_for_user(PLAYS_USERNAME, ctx=ctx)
 
     log_success("🎉 Plays z BGG zostały zsynchronizowane z bazą danych")
     return {"status": "done", **(result or {})}
