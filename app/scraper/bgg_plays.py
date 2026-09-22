@@ -29,6 +29,16 @@ DEFAULT_DELAY_SECONDS = float(os.getenv("BGG_PLAYS_DELAY_SECONDS", "1.2"))
 DEFAULT_SHOWCOUNT = int(os.getenv("BGG_PLAYS_SHOWCOUNT", "600"))
 PLAY_CONCURRENCY = int(os.getenv("BGG_PLAYS_CONCURRENCY", "1"))
 
+# Gry, którym BGG liczy zero rozgrywek, pomijamy zamiast pytać o nie serwis.
+# `num_plays` to licznik samego BGG, spisywany przy każdym syncu kolekcji (co
+# 3 h), więc „zero" znaczy „na pewno nie ma czego pobierać" — odpowiedź i tak
+# byłaby pusta, a kosztuje zapytanie plus pauzę.
+#
+# Cena: rozgrywka dopisana do gry dotąd niegranej wchodzi dopiero po najbliższym
+# syncu kolekcji, czyli najwyżej 3 h później niż dotąd. Wyłącza się ustawieniem
+# BGG_PLAYS_SKIP_UNPLAYED=0.
+SKIP_UNPLAYED = os.getenv("BGG_PLAYS_SKIP_UNPLAYED", "1") not in ("0", "false", "False")
+
 
 # =============================================================================
 # HTTP HELPERS
@@ -249,15 +259,22 @@ async def _sync_game_plays(
                     result = await upsert_play(session, data, hash_cache)
                     if result == "inserted":
                         inserted += 1
-                        inserted_titles.append(game_label)
                     elif result == "updated":
                         updated += 1
-                        updated_titles.append(game_label)
                     else:
                         skipped += 1
-                        skipped_titles.append(game_label)
         finally:
             await session.close()
+
+        # Tytuł raz na grę, nie raz na rozgrywkę. Dotąd gra z pięćdziesięcioma
+        # partiami wpisywała się do listy pięćdziesiąt razy i wypychała z niej
+        # wszystkie pozostałe.
+        if inserted:
+            inserted_titles.append(game_label)
+        if updated:
+            updated_titles.append(game_label)
+        if skipped:
+            skipped_titles.append(game_label)
 
         await asyncio.sleep(DEFAULT_DELAY_SECONDS)
         return {
@@ -299,12 +316,28 @@ async def update_bgg_plays_from_collection(ctx=None) -> Dict[str, Any]:
         session = cast(AsyncSession, session)
         try:
             res = await session.execute(
-                select(BGGGame.bgg_id, BGGGame.title).order_by(BGGGame.bgg_id.asc())
+                select(BGGGame.bgg_id, BGGGame.title, BGGGame.num_plays)
+                .order_by(BGGGame.bgg_id.asc())
             )
-            games = [(row[0], row[1]) for row in res.all() if row[0] is not None]
+            rows = [row for row in res.all() if row[0] is not None]
         finally:
             await session.close()
+
+        # NULL zostaje w grze: brak informacji to nie to samo co zero, a nie
+        # chcemy cicho przestać synchronizować gry, których kolekcja jeszcze
+        # nie opisała.
+        if SKIP_UNPLAYED:
+            games = [(r[0], r[1]) for r in rows if r[2] is None or r[2] > 0]
+        else:
+            games = [(r[0], r[1]) for r in rows]
+        unplayed = len(rows) - len(games)
         games_total = len(games)
+        if unplayed:
+            log_info(
+                f"⏭️ Pomijam {unplayed} gier bez ani jednej rozgrywki w BGG "
+                f"(zostaje {games_total} z {len(rows)})."
+            )
+        ctx.set_counters(skipped_games=unplayed)
         sem = asyncio.Semaphore(PLAY_CONCURRENCY)
 
         # Postęp per gra — to najdłuższy etap (pauza ~1,2 s na grę i na stronę),
@@ -344,6 +377,7 @@ async def update_bgg_plays_from_collection(ctx=None) -> Dict[str, Any]:
     total_plays = inserted_total + updated_total + skipped_total
     stats = {
         "Total games": games_total,
+        "Skipped games (no plays in BGG)": unplayed,
         "Plays processed": total_plays,
         "New plays": inserted_total,
         "Updated plays": updated_total,
@@ -356,6 +390,7 @@ async def update_bgg_plays_from_collection(ctx=None) -> Dict[str, Any]:
     await send_scrape_message("BGG plays sync", "✅ SUCCESS", start_time, end_time, stats, details)
     return {
         "games": games_total,
+        "skipped_games": unplayed,
         "inserted": inserted_total,
         "updated": updated_total,
         "skipped": skipped_total,
