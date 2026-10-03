@@ -17,7 +17,7 @@ from app.models.bgg_game import BGGGame
 from app.models.bgg_accessory import BGGAccessory
 from app.models.bgg_hotness import BGGHotGame
 from app.models.bgg_hotness import BGGHotPerson
-from app.tasks.bgg_game import setup_scheduler
+from app.tasks.bgg_game import init_bgg_db, setup_scheduler
 from app.tasks.bgg_accessory import setup_accessory_scheduler
 from app.tasks.bgg_hotness import setup_hotness_scheduler
 from app.tasks.daily_summary import setup_daily_summary_scheduler
@@ -26,10 +26,13 @@ from app.utils.logging import log_info
 
 app = FastAPI()
 
-# Tworzenie tabel w bazie danych
+# Tworzenie tabel w bazie danych. Nowe kolumny kolekcji dokładamy od razu
+# przy starcie — `/bgg_collection` czyta je wszystkie, więc bez nich odpowiadał
+# 500 aż do pierwszej aktualizacji kolekcji.
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await init_bgg_db()
 
 # Inicjalizacja aplikacji i schedulerów
 @app.on_event("startup")
