@@ -12,9 +12,20 @@ from app.models.bgg_game import Base
 USERNAME = "qubus"
 
 
+# `create_all` nie dokłada kolumn do istniejącej tabeli — nowe dopisujemy
+# idempotentnie, jak `service` w job_runs.
+_ADD_COLUMNS_SQL = [
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS publishers JSONB",
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS version_name VARCHAR",
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS version_languages VARCHAR",
+]
+
+
 async def init_bgg_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        for statement in _ADD_COLUMNS_SQL:
+            await conn.execute(text(statement))
 
 
 async def setup_scheduler():

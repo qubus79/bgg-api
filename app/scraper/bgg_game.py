@@ -176,6 +176,40 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         "status_wanttoplay": bool(to_bool(_element_value(status_el, "wanttoplay"))),
         "status_wanttobuy": bool(to_bool(_element_value(status_el, "wanttobuy"))),
         "status_wishlist_priority": to_int(_element_value(status_el, "wishlistpriority")),
+        **extract_owned_version(item),
+    }
+
+
+def extract_owned_version(item: ET.Element) -> Dict[str, Any]:
+    """Wersja posiadanego egzemplarza (`collection&version=1`).
+
+    BGG oddaje ją jako `<version><item>` z nazwą wydania i linkami języków.
+    Gdy wersja nie jest ustawiona w kolekcji, obu pól nie ma (None).
+    """
+    version_item = item.find("version/item")
+    if version_item is None:
+        return {"version_name": None, "version_languages": None}
+
+    name = None
+    for name_el in version_item.findall("name"):
+        if name_el.attrib.get("type") == "primary":
+            name = name_el.attrib.get("value")
+            break
+    if name is None:
+        name = _element_value(version_item.find("name"))
+
+    languages = [
+        value
+        for value in (
+            link.attrib.get("value")
+            for link in version_item.findall("link")
+            if link.attrib.get("type") == "language"
+        )
+        if value
+    ]
+    return {
+        "version_name": name or None,
+        "version_languages": ", ".join(languages) or None,
     }
 
 
@@ -201,6 +235,7 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
         "mechanics": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgamemechanic") if value],
         "designers": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgamedesigner") if value],
         "artists": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgameartist") if value],
+        "publishers": [value for value in (l.attrib.get("value") for l in links if l.attrib.get("type") == "boardgamepublisher") if value],
         "min_players": to_int(_element_value(detail_item.find("minplayers"))),
         "max_players": to_int(_element_value(detail_item.find("maxplayers"))),
         "min_playtime": to_int(_element_value(detail_item.find("minplaytime"))),
@@ -447,7 +482,8 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
 
     log_info("📅 Rozpoczynam pobieranie kolekcji BGG")
 
-    collection_url = f"{BGG_XML_BASE}/collection?username={username}&stats=1"
+    # version=1 — wersja posiadanego egzemplarza (nazwa wydania, języki).
+    collection_url = f"{BGG_XML_BASE}/collection?username={username}&stats=1&version=1"
     start_time = datetime.utcnow()
 
     async with _make_client() as client:

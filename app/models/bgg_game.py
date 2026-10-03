@@ -42,6 +42,12 @@ class BGGGame(Base):
     mechanics = Column(JSONB, nullable=True)
     designers = Column(JSONB, nullable=True)
     artists = Column(JSONB, nullable=True)
+    publishers = Column(JSONB, nullable=True)
+
+    # Wersja posiadanego egzemplarza z kolekcji BGG (`collection&version=1`):
+    # nazwa wydania i jego języki (po przecinku), np. "Polish edition" / "Polish".
+    version_name = Column(String, nullable=True)
+    version_languages = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=False), server_default=func.now())
 
