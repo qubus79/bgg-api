@@ -26,9 +26,12 @@ from app.utils.model_helpers import apply_model_fields
 BGG_XML_BASE = "https://boardgamegeek.com/xmlapi2"
 BGG_API_TOKEN = os.getenv("BGG_API_TOKEN")
 USER_AGENT = "BoardGamesApp/1.0 (+contact: your-email@example.com)"
-THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
-ACCESSORY_DETAIL_CONCURRENCY = int(os.getenv("BGG_ACCESSORY_DETAIL_CONCURRENCY", "1"))
+THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{ids}}&stats=1"
+# BGG `thing` przyjmuje do 20 identyfikatorów naraz — jedno zapytanie na
+# paczkę zamiast jednego na akcesorium.
+THING_BATCH_SIZE = 20
 ACCESSORY_THING_PAUSE_SECONDS = float(os.getenv("BGG_ACCESSORY_THING_PAUSE_SECONDS", "1.5"))
+FETCH_MAX_ATTEMPTS = int(os.getenv("BGG_FETCH_MAX_ATTEMPTS", "6"))
 BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.3"))
 BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.2"))
 BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "1.5"))
@@ -61,6 +64,10 @@ def _make_client() -> httpx.AsyncClient:
 # RETRY / BACKOFF HANDLING
 # =============================================================================
 
+class BGGAuthError(RuntimeError):
+    """401/403 — ponawianie nic nie da, trzeba poprawić token."""
+
+
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
     """
     Pobiera XML z obsługą:
@@ -72,7 +79,7 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
     log_info(f"➡️ Fetching XML from: {url}")
 
     base_delay = 1.0
-    max_attempts = 12
+    max_attempts = FETCH_MAX_ATTEMPTS
     last_exc: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):
@@ -104,13 +111,16 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
                 continue
 
             if resp.status_code in (401, 403):
-                raise RuntimeError(
+                raise BGGAuthError(
                     f"BGG auth error {resp.status_code}. "
                     "Sprawdź BGG_API_TOKEN i czy aplikacja na BGG jest zatwierdzona."
                 )
 
             resp.raise_for_status()
 
+        except (BGGAuthError, httpx.HTTPStatusError):
+            # Błąd autoryzacji i pozostałe 4xx nie mijają same — bez ponawiania.
+            raise
         except Exception as e:
             last_exc = e
             sleep_s = base_delay * attempt
@@ -179,38 +189,63 @@ def extract_details(detail_item: ET.Element) -> Dict[str, Any]:
 
 
 # =============================================================================
-# PAYLOAD BUILDERS
+# SZCZEGÓŁY: TYLKO NOWE I ZMIENIONE, PACZKAMI
 # =============================================================================
 
-async def _build_accessory_payload(
-    client: httpx.AsyncClient,
-    sem: asyncio.Semaphore,
-    idx: int,
-    total: int,
-    bgg_id: str,
-    basic_data: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+def ids_needing_details(
+    basics: Dict[str, Dict[str, Any]],
+    known: Dict[int, Dict[str, Any]],
+) -> List[str]:
+    """Akcesoria, dla których trzeba pobrać `thing` (opis, wydawca).
 
-    title = basic_data.get("name") or f"ID={bgg_id}"
-    detail_url = THING_URL_TMPL.format(bgg_id=bgg_id)
+    Kolekcja podaje `lastmodified` każdej pozycji. Gdy jest taki sam jak
+    w bazie, opis i wydawca też się nie zmieniły — bierzemy je z bazy zamiast
+    pytać BGG. Nowe pozycje i pozycje bez daty zawsze idą do pobrania.
+    """
+    needed: List[str] = []
+    for bgg_id, basic in basics.items():
+        row = known.get(int(bgg_id))
+        if row is None:
+            needed.append(bgg_id)
+            continue
+        modified = basic.get("last_modified")
+        if not modified or modified != row.get("last_modified"):
+            needed.append(bgg_id)
+    return needed
 
-    async with sem:
-        log_info(f"[{idx}/{total}] 🧰 Przetwarzam akcesorium: {title} (ID={bgg_id})")
-        detail_root = await fetch_xml(client, detail_url)
-        detail_item = detail_root.find("item")
-        if not detail_item:
-            log_info(f"⚠️ Pominięto {title} (ID={bgg_id}) - brak danych szczegółowych")
-            return None
 
-        detailed_data = extract_details(detail_item)
-        full_data = {
-            "bgg_id": int(bgg_id),
-            **basic_data,
-            **detailed_data,
+def chunks(ids: List[str], size: int = THING_BATCH_SIZE) -> List[List[str]]:
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
+def parse_thing_batch(root: ET.Element) -> Dict[str, Dict[str, Any]]:
+    """Odpowiedź `thing` dla wielu id → szczegóły po id."""
+    return {
+        item.attrib["id"]: extract_details(item)
+        for item in root.findall("item")
+        if item.attrib.get("id")
+    }
+
+
+async def _load_known_details() -> Dict[int, Dict[str, Any]]:
+    """Akcesoria z bazy: data zmiany i szczegóły pobrane wcześniej."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(
+                BGGAccessory.bgg_id,
+                BGGAccessory.last_modified,
+                BGGAccessory.description,
+                BGGAccessory.publisher,
+            )
+        )
+        return {
+            row.bgg_id: {
+                "last_modified": row.last_modified,
+                "description": row.description,
+                "publisher": row.publisher,
+            }
+            for row in result.all()
         }
-
-    await asyncio.sleep(ACCESSORY_THING_PAUSE_SECONDS)
-    return full_data
 
 
 # =============================================================================
@@ -310,31 +345,36 @@ async def fetch_bgg_accessories(username: str, ctx=None) -> None:
 
         log_info(f"🔍 Znaleziono {len(collection_data)} akcesorii")
 
-        collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
-        sem = asyncio.Semaphore(ACCESSORY_DETAIL_CONCURRENCY)
+        basics = {bgg_id: extract_collection_basics(item) for bgg_id, item in collection_data.items()}
+        known = await _load_known_details()
+        needed = ids_needing_details(basics, known)
+        log_info(f"🧰 Szczegóły do pobrania: {len(needed)} z {len(basics)} (reszta bez zmian od ostatniego razu)")
 
-        # Szczegóły pobierane sekwencyjnie (ACCESSORY_DETAIL_CONCURRENCY=1,
-        # pauza ~1,5 s na pozycję) — tutaj mija większość czasu, więc
-        # raportujemy każde akcesorium osobno.
-        ctx.set_stage("fetch_details", total=len(collection_items), unit="accessories", index=2, count=3)
+        # Paczki po 20 — tu mija większość czasu, więc raportujemy postęp
+        # po każdej paczce.
+        ctx.set_stage("fetch_details", total=len(needed), unit="accessories", index=2, count=3)
+        details: Dict[str, Dict[str, Any]] = {}
+        batches = chunks(needed)
+        for number, batch in enumerate(batches, start=1):
+            root = await fetch_xml(client, THING_URL_TMPL.format(ids=",".join(batch)))
+            details.update(parse_thing_batch(root))
+            ctx.set_progress(min(number * THING_BATCH_SIZE, len(needed)))
+            if number < len(batches):
+                await asyncio.sleep(ACCESSORY_THING_PAUSE_SECONDS)
 
-        async def _tracked(idx: int, bgg_id, basic_data):
-            result = await _build_accessory_payload(
-                client, sem, idx, len(collection_items), bgg_id, basic_data
-            )
-            ctx.bump()
-            source = result or basic_data or {}
-            ctx.set_detail(str(source.get("name") or source.get("title") or ""))
-            return result
+        accessories_data: List[Dict[str, Any]] = []
+        for bgg_id, basic in basics.items():
+            if bgg_id in details:
+                extra = details[bgg_id]
+            elif int(bgg_id) in known and bgg_id not in needed:
+                row = known[int(bgg_id)]
+                extra = {"description": row["description"], "publisher": row["publisher"]}
+            else:
+                log_info(f"⚠️ Pominięto {basic.get('name') or bgg_id} (ID={bgg_id}) - brak danych szczegółowych")
+                continue
+            accessories_data.append({"bgg_id": int(bgg_id), **basic, **extra})
 
-        tasks = []
-        for idx, (bgg_id, item) in enumerate(collection_items, start=1):
-            basic_data = extract_collection_basics(item)
-            tasks.append(_tracked(idx, bgg_id, basic_data))
-
-        results = await asyncio.gather(*tasks)
-        accessories_data = [result for result in results if result is not None]
         hash_cache = await build_hash_cache()
         if hash_cache is None:
             log_info("🗂️ Hash cache Redis nie został skonfigurowany; każdy rekord będzie zapisywany.")
