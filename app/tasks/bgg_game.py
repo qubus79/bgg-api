@@ -18,6 +18,8 @@ _ADD_COLUMNS_SQL = [
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS publishers JSONB",
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS version_name VARCHAR",
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS version_languages VARCHAR",
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS last_modified VARCHAR",
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS details_fetched_at TIMESTAMP",
 ]
 
 
@@ -53,11 +55,11 @@ async def update_bgg_collection(ctx=jobs.NULL_CTX) -> dict:
     log_info("Inicjalizacja bazy BGG...")
     await init_bgg_db()
 
-    ctx.set_stage("fetch_remote", detail=f"kolekcja {USERNAME}", index=1, count=2)
+    # Etapy 1–4 (kolekcja, szczegóły, dane prywatne, zapis) ustawia scraper.
     log_info("Rozpoczynam pobieranie danych z BGG kolekcji...")
     await fetch_bgg_collection(USERNAME, ctx=ctx)
 
-    ctx.set_stage("finalizing", index=2, count=2)
+    ctx.set_stage("finalizing", index=5, count=5)
 
     log_success("🎉 Kolekcja BGG została zsynchronizowana z bazą danych")
     return {"status": "done"}

@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional, List, Tuple, cast
+from typing import Callable, Dict, Any, Optional, List, Tuple, cast
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.convert import to_bool, to_float, to_int
 from app.utils.logging import log_info, log_success
 from app.utils.model_helpers import apply_model_fields
-from app.utils.bgg_hash_cache import build_hash_cache, compute_payload_hash
 from app.utils.telegram_notify import send_scrape_message
 ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
@@ -36,6 +35,14 @@ BGG_PRIVATE_USER_ID = int(os.getenv("BGG_PRIVATE_USER_ID", "2382533"))
 DETAIL_CONCURRENCY = int(os.getenv("BGG_DETAIL_CONCURRENCY", "1"))
 THING_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_THING_PAUSE_SECONDS", "1.5"))
 THING_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{bgg_id}}&stats=1"
+# Szczegóły gier paczkami — jedno zapytanie `thing` na 20 gier zamiast na grę.
+THING_BATCH_SIZE = int(os.getenv("BGG_THING_BATCH_SIZE", "20"))
+THING_BATCH_URL_TMPL = f"{BGG_XML_BASE}/thing?id={{ids}}&stats=1"
+# Szczegóły (opis, mechaniki, wydawcy, waga…) zmieniają się rzadko — odświeżamy
+# je, gdy są starsze niż tyle dni. Ocena, ranking i partie idą z kolekcji
+# przy każdym syncu.
+DETAILS_MAX_AGE_DAYS = int(os.getenv("BGG_DETAILS_MAX_AGE_DAYS", "30"))
+PRIVATE_PAUSE_SECONDS = float(os.getenv("BGG_PRIVATE_PAUSE_SECONDS", "0.5"))
 BGG_REQUEST_PAUSE_SECONDS = float(os.getenv("BGG_REQUEST_PAUSE_SECONDS", "0.8"))
 BGG_REQUEST_JITTER_SECONDS = float(os.getenv("BGG_REQUEST_JITTER_SECONDS", "0.4"))
 BGG_REQUEST_BACKOFF_FACTOR = float(os.getenv("BGG_REQUEST_BACKOFF_FACTOR", "2"))
@@ -65,22 +72,39 @@ def _make_client() -> httpx.AsyncClient:
 # RETRY / BACKOFF HANDLING
 # =============================================================================
 
-async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
+class BGGAuthError(RuntimeError):
+    """401/403 — ponawianie nic nie da, przerywamy od razu."""
+
+
+# BGG odpowiada 202, gdy dopiero przygotowuje dane (zwykle kolekcję). Pytamy
+# wtedy co kilka sekund — wcześniej odstęp rósł wykładniczo (1, 2, 4 … 64 s)
+# i sam pierwszy krok potrafił trwać kilka minut.
+QUEUED_POLL_SECONDS = float(os.getenv("BGG_QUEUED_POLL_SECONDS", "4"))
+QUEUED_MAX_ATTEMPTS = int(os.getenv("BGG_QUEUED_MAX_ATTEMPTS", "45"))
+RETRY_MAX_ATTEMPTS = int(os.getenv("BGG_FETCH_MAX_ATTEMPTS", "6"))
+RETRY_MAX_DELAY_SECONDS = float(os.getenv("BGG_RETRY_MAX_DELAY_SECONDS", "60"))
+
+
+async def fetch_xml(
+    client: httpx.AsyncClient,
+    url: str,
+    on_wait: Optional[Callable[[str], None]] = None,
+) -> ET.Element:
     """
     Pobierz XML z obsługą:
-    - 202 Accepted (kolejka na BGG) + Retry-After,
-    - 429 Too Many Requests + Retry-After,
-    - 5xx z backoffem,
-    - 401/403 (problem z tokenem).
+    - 202 Accepted (BGG przygotowuje dane) — pytamy co `QUEUED_POLL_SECONDS`,
+    - 429 Too Many Requests i 5xx — backoff z górnym limitem,
+    - 401/403 — bez ponawiania.
+    `on_wait` dostaje opis oczekiwania (do postępu zadania).
     """
     log_info(f"➡️ Fetching XML from: {url}")
 
     base_delay = 1.0
-    max_attempts = 12
-
+    queued = 0
+    failures = 0
     last_exc: Exception | None = None
 
-    for attempt in range(1, max_attempts + 1):
+    while True:
         try:
             resp = await client.get(url)
 
@@ -90,44 +114,51 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element:
                 return root
 
             if resp.status_code == 202:
-                delay = float(resp.headers.get("Retry-After", base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))))
-                log_info(f"⏳ 202 Accepted — czekam {delay:.1f}s (attempt {attempt}/{max_attempts})")
+                queued += 1
+                if queued > QUEUED_MAX_ATTEMPTS:
+                    raise RuntimeError(f"BGG nadal przygotowuje dane po {queued - 1} próbach — spróbuj później.")
+                delay = float(resp.headers.get("Retry-After", QUEUED_POLL_SECONDS))
+                message = f"BGG is preparing the data, waiting ({queued})"
+                log_info(f"⏳ 202 Accepted — BGG przygotowuje dane, czekam {delay:.0f}s (próba {queued}/{QUEUED_MAX_ATTEMPTS})")
+                if on_wait:
+                    on_wait(message)
                 await asyncio.sleep(delay)
                 continue
 
-            if resp.status_code == 429:
-                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
-                jitter = random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
-                log_info(f"🚦 429 Too Many Requests — czekam {delay + jitter:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(delay + jitter)
-                continue
-
-            if resp.status_code in (500, 502, 503, 504):
-                delay = base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (attempt - 1))
-                log_info(f"🛠 {resp.status_code} — retry za {delay:.1f}s (attempt {attempt}/{max_attempts})")
-                await asyncio.sleep(delay)
-                continue
-
-            # 401/403 — token nie ustawiony/niepoprawny/niezatwierdzona aplikacja
             if resp.status_code in (401, 403):
-                raise RuntimeError(
+                raise BGGAuthError(
                     f"BGG auth error {resp.status_code}. "
                     "Sprawdź BGG_API_TOKEN i czy aplikacja na BGG jest zatwierdzona."
                 )
 
+            if resp.status_code == 429 or resp.status_code in (500, 502, 503, 504):
+                failures += 1
+                if failures >= RETRY_MAX_ATTEMPTS:
+                    resp.raise_for_status()
+                delay = min(base_delay * (BGG_REQUEST_BACKOFF_FACTOR ** (failures - 1)), RETRY_MAX_DELAY_SECONDS)
+                delay += random.uniform(0, BGG_REQUEST_JITTER_SECONDS)
+                log_info(f"🚦 HTTP {resp.status_code} — retry za {delay:.1f}s (próba {failures}/{RETRY_MAX_ATTEMPTS})")
+                if on_wait:
+                    on_wait(f"BGG answered {resp.status_code}, retrying ({failures})")
+                await asyncio.sleep(delay)
+                continue
+
             # Inne kody — przerwij standardowym wyjątkiem
             resp.raise_for_status()
+            raise RuntimeError(f"Nieoczekiwana odpowiedź BGG: HTTP {resp.status_code}")
 
+        except (BGGAuthError, httpx.HTTPStatusError):
+            raise
+        except RuntimeError:
+            raise
         except Exception as e:
             last_exc = e
-            sleep_s = base_delay * attempt
-            log_info(f"⚠️ Wyjątek {type(e).__name__}: {e} — retry za {sleep_s:.1f}s (attempt {attempt}/{max_attempts})")
+            failures += 1
+            if failures >= RETRY_MAX_ATTEMPTS:
+                raise last_exc
+            sleep_s = min(base_delay * failures * 2, RETRY_MAX_DELAY_SECONDS)
+            log_info(f"⚠️ Wyjątek {type(e).__name__}: {e} — retry za {sleep_s:.1f}s (próba {failures}/{RETRY_MAX_ATTEMPTS})")
             await asyncio.sleep(sleep_s)
-
-    # Po próbach — rzuć ostatni wyjątek
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Niepowodzenie pobierania z BGG bez konkretnego wyjątku.")
 
 
 # =============================================================================
@@ -176,6 +207,9 @@ def extract_collection_basics(item: ET.Element) -> Dict[str, Any]:
         "status_wanttoplay": bool(to_bool(_element_value(status_el, "wanttoplay"))),
         "status_wanttobuy": bool(to_bool(_element_value(status_el, "wanttobuy"))),
         "status_wishlist_priority": to_int(_element_value(status_el, "wishlistpriority")),
+        # Zmienia się przy każdej zmianie Twojej pozycji w kolekcji (status,
+        # ocena, komentarz, dane prywatne) — po niej poznajemy, co pobrać.
+        "last_modified": _element_value(status_el, "lastmodified"),
         **extract_owned_version(item),
     }
 
@@ -363,65 +397,87 @@ async def fetch_private_collection_item(
 
 
 # =============================================================================
-# PAYLOAD BUILDERS
+# CO POBRAĆ: TYLKO NOWE, ZMIENIONE I PRZETERMINOWANE
 # =============================================================================
 
-async def _build_game_payload(
-    client: httpx.AsyncClient,
-    auth: BGGAuthSessionManager,
-    sem: asyncio.Semaphore,
-    idx: int,
-    total: int,
-    bgg_id: str,
-    basic_data: Dict[str, Any],
-    collection_hash: str,
-) -> Optional[Tuple[Dict[str, Any], str, str]]:
+def plan_game_fetches(
+    basics: Dict[str, Dict[str, Any]],
+    known: Dict[int, Dict[str, Any]],
+    now: datetime,
+    max_age_days: int = DETAILS_MAX_AGE_DAYS,
+) -> Tuple[List[str], List[str]]:
+    """Gry, dla których trzeba pobrać szczegóły (`thing`) i dane prywatne.
 
-    title = basic_data.get("title") or f"ID={bgg_id}"
-    detail_url = THING_URL_TMPL.format(bgg_id=bgg_id)
+    - Szczegóły: nowe gry, gry bez szczegółów i szczegóły starsze niż
+      `max_age_days`. Ocena, ranking, partie i statusy przychodzą z samej
+      kolekcji, więc nie są powodem do pobierania szczegółów.
+    - Dane prywatne (cena, data zakupu…): nowe gry i gry, których pozycja
+      w kolekcji się zmieniła (`lastmodified`). Gdy w bazie nie ma jeszcze
+      daty zmiany (pierwszy sync po wdrożeniu), ufamy temu, co już jest.
+    """
+    details: List[str] = []
+    private: List[str] = []
+    for bgg_id, basic in basics.items():
+        row = known.get(int(bgg_id))
+        if row is None:
+            details.append(bgg_id)
+            private.append(bgg_id)
+            continue
 
-    async with sem:
-        log_info(f"\n[{idx}/{total}] 🧩 Przetwarzam grę: {title} (ID={bgg_id})")
-        detail_root = await fetch_xml(client, detail_url)
-        detail_item = detail_root.find("item")
-        if not detail_item:
-            log_info(f"⚠️ Pominięto grę {title} (ID={bgg_id}) - brak danych szczegółowych")
-            return None
+        fetched_at = row.get("details_fetched_at")
+        if fetched_at is None or (now - fetched_at).days >= max_age_days:
+            details.append(bgg_id)
 
-        detailed_data = extract_details(detail_item)
+        stored = row.get("last_modified")
+        current = basic.get("last_modified")
+        if stored is not None and current != stored:
+            private.append(bgg_id)
+    return details, private
 
-        private_data = await fetch_private_collection_item(client, auth, int(bgg_id))
-        if private_data:
-            log_info("🔒 Private purchase fields: available")
-        else:
-            log_info("🔒 Private purchase fields: not available")
 
-        full_data = {
-            "bgg_id": int(bgg_id),
-            **basic_data,
-            **detailed_data,
-            **(private_data or {}),
-        }
+def chunks(ids: List[str], size: int = THING_BATCH_SIZE) -> List[List[str]]:
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
 
-    payload = {
-        "collection": basic_data,
-        "details": detailed_data,
-        "private": private_data or {},
+
+def parse_thing_batch(root: ET.Element) -> Dict[str, Dict[str, Any]]:
+    """Odpowiedź `thing` dla wielu id → szczegóły po id."""
+    return {
+        item.attrib["id"]: extract_details(item)
+        for item in root.findall("item")
+        if item.attrib.get("id")
     }
-    payload_hash = compute_payload_hash(payload)
 
-    await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
-    return full_data, collection_hash, payload_hash
+
+async def _load_known_games() -> Dict[int, Dict[str, Any]]:
+    """Gry z bazy: data zmiany pozycji i kiedy pobrano szczegóły."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(BGGGame.bgg_id, BGGGame.last_modified, BGGGame.details_fetched_at)
+        )
+        return {
+            row.bgg_id: {
+                "last_modified": row.last_modified,
+                "details_fetched_at": row.details_fetched_at,
+            }
+            for row in result.all()
+        }
 
 
 # =============================================================================
 # DATA PERSISTENCE
 # =============================================================================
 
+def _changed_fields(model: Any, data: Dict[str, Any]) -> List[str]:
+    return [key for key, value in data.items() if hasattr(model, key) and getattr(model, key) != value]
+
+
 async def _persist_games(
     games_data: List[Dict[str, Any]],
     collection_ids: set[int],
 ) -> tuple[int, int, int, List[str], List[str], List[str]]:
+    """Zapis do bazy. „Zaktualizowana" liczy się tylko, gdy coś się zmieniło —
+    sync przepisuje dane z kolekcji wszystkim grom, ale większość zostaje
+    bez zmian."""
 
     inserted = 0
     updated = 0
@@ -444,10 +500,15 @@ async def _persist_games(
             title = data.get("title") or data.get("name") or f"BGG ID {bgg_id}"
             model = existing.get(bgg_id)
             if model:
+                changed = _changed_fields(model, data)
+                if not changed:
+                    continue
                 apply_model_fields(model, data)
-                log_info(f"♻️ Zaktualizowano dane gry: {title}")
-                updated += 1
-                updated_titles.append(title)
+                # Sama data zmiany i data pobrania szczegółów to nie zmiana gry.
+                if set(changed) - {"last_modified", "details_fetched_at"}:
+                    log_info(f"♻️ {title}: {', '.join(sorted(changed))}")
+                    updated += 1
+                    updated_titles.append(title)
             else:
                 session.add(BGGGame(**data))
                 log_info(f"➕ Dodano nową grę: {title}")
@@ -475,6 +536,9 @@ async def _persist_games(
 # PUBLIC ENTRY POINT
 # =============================================================================
 
+STAGE_COUNT = 5  # kolekcja · szczegóły · dane prywatne · zapis · zakończenie
+
+
 async def fetch_bgg_collection(username: str, ctx=None) -> None:
     if ctx is None:
         from app import jobs
@@ -488,83 +552,93 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
 
     async with _make_client() as client:
         auth = BGGAuthSessionManager()
-        collection_root = await fetch_xml(client, collection_url)
+
+        # 1. Kolekcja — jedno zapytanie; BGG potrafi kazać czekać (202).
+        ctx.set_stage("fetch_remote", detail=f"collection of {username}", index=1, count=STAGE_COUNT)
+        collection_root = await fetch_xml(client, collection_url, on_wait=ctx.set_detail)
         collection_data = parse_collection_data(collection_root)
-
-        log_info(f"🔍 Znaleziono {len(collection_data)} gier w kolekcji")
-
-        hash_cache = await build_hash_cache()
-        if hash_cache is None:
-            log_info("🗂️ Hash cache Redis nie został skonfigurowany lub nie działa; każdy /thing będzie przetwarzany")
-        collection_items = list(collection_data.items())
         collection_ids = {int(bgg_id) for bgg_id in collection_data.keys() if bgg_id is not None}
-        sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-        tasks = []
-        # Gry pominięte dzięki zgodnemu hashowi kolekcji — czyli te, dla których
-        # nie trzeba było ruszać /thing. Jedna gra = jeden skip.
-        hash_skips = 0
+        basics = {
+            bgg_id: extract_collection_basics(item)
+            for bgg_id, item in collection_data.items()
+            if bgg_id is not None
+        }
+        log_info(f"🔍 Kolekcja: {len(basics)} gier")
 
-        for idx, (bgg_id, item) in enumerate(collection_items, start=1):
-            if bgg_id is None:
-                continue
+        known = await _load_known_games()
+        now = datetime.utcnow()
+        details_ids, private_ids = plan_game_fetches(basics, known, now)
+        new_count = sum(1 for bgg_id in basics if int(bgg_id) not in known)
+        log_info(
+            f"🧮 Plan: szczegóły {len(details_ids)} (nowe {new_count}, starsze niż "
+            f"{DETAILS_MAX_AGE_DAYS} dni lub bez szczegółów), dane prywatne {len(private_ids)} "
+            f"(nowe i zmienione), reszta tylko dane z kolekcji"
+        )
+        ctx.set_counters(total=len(basics), details=len(details_ids), private=len(private_ids))
 
-            basic_data = extract_collection_basics(item)
-            collection_hash = compute_payload_hash({"collection": basic_data})
-            should_fetch = True
+        # 2. Szczegóły paczkami po 20 — postęp po każdej paczce.
+        details: Dict[str, Dict[str, Any]] = {}
+        batches = chunks(details_ids)
+        ctx.set_stage(
+            "fetch_details", total=len(details_ids), unit="games",
+            detail=f"{len(batches)} batches of {THING_BATCH_SIZE}", index=2, count=STAGE_COUNT,
+        )
+        for number, batch in enumerate(batches, start=1):
+            if ctx.cancelled:
+                log_info("⏹️ Przerwano na prośbę użytkownika (szczegóły)")
+                return
+            root = await fetch_xml(client, THING_BATCH_URL_TMPL.format(ids=",".join(batch)), on_wait=ctx.set_detail)
+            parsed = parse_thing_batch(root)
+            details.update(parsed)
+            done = min(number * THING_BATCH_SIZE, len(details_ids))
+            ctx.set_progress(done)
+            ctx.set_detail(f"batch {number}/{len(batches)}")
+            missing = len(batch) - len(parsed)
+            log_info(
+                f"📦 Szczegóły: paczka {number}/{len(batches)} — {len(parsed)} gier"
+                + (f", {missing} bez odpowiedzi" if missing else "")
+                + f" ({done}/{len(details_ids)})"
+            )
+            if number < len(batches):
+                await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
 
-            if hash_cache:
-                cached_collection = await hash_cache.get_collection_hash(int(bgg_id))
-                cached_detail = await hash_cache.get_detail_hash(int(bgg_id))
-                if cached_collection == collection_hash and cached_detail:
-                    log_info(
-                        f"🛡️ {basic_data.get('title') or basic_data.get('name')} (ID={bgg_id}) — hash kolekcji ({collection_hash[:8]}) taki sam jak w Redisie, pomijam detail"
-                    )
-                    should_fetch = False
-                    hash_skips += 1
+        # 3. Dane prywatne — jedno zapytanie na grę, tylko nowe i zmienione.
+        private: Dict[str, Dict[str, Any]] = {}
+        ctx.set_stage("fetch_private", total=len(private_ids), unit="games", index=3, count=STAGE_COUNT)
+        for number, bgg_id in enumerate(private_ids, start=1):
+            if ctx.cancelled:
+                log_info("⏹️ Przerwano na prośbę użytkownika (dane prywatne)")
+                return
+            title = basics[bgg_id].get("title") or f"ID={bgg_id}"
+            ctx.set_detail(title)
+            data = await fetch_private_collection_item(client, auth, int(bgg_id))
+            if data:
+                private[bgg_id] = data
+            ctx.set_progress(number)
+            log_info(f"🔒 [{number}/{len(private_ids)}] {title} — {'dane prywatne' if data else 'brak danych prywatnych'}")
+            if number < len(private_ids):
+                await asyncio.sleep(PRIVATE_PAUSE_SECONDS)
 
-            if should_fetch:
-                tasks.append(
-                    _build_game_payload(client, auth, sem, idx, len(collection_items), bgg_id, basic_data, collection_hash)
-                )
+        # 4. Zapis: dane z kolekcji dla wszystkich, szczegóły i dane prywatne
+        #    tylko tam, gdzie je pobraliśmy (reszta zostaje w bazie).
+        games_data: List[Dict[str, Any]] = []
+        for bgg_id, basic in basics.items():
+            data: Dict[str, Any] = {"bgg_id": int(bgg_id), **basic}
+            if bgg_id in details:
+                data.update(details[bgg_id])
+                data["details_fetched_at"] = now
+            elif int(bgg_id) not in known:
+                log_info(f"⚠️ {basic.get('title') or bgg_id} (ID={bgg_id}) — brak szczegółów, zapisuję dane z kolekcji")
+            if bgg_id in private:
+                data.update(private[bgg_id])
+            games_data.append(data)
 
-        results = await asyncio.gather(*tasks)
-        games_data = []
-        detail_hash_updates = 0
-        detail_hash_skips = 0
-
-        for result in results:
-            if not result:
-                continue
-
-            full_data, collection_hash, payload_hash = result
-            bgg_id = full_data.get("bgg_id")
-
-            skip_write = False
-            if hash_cache and bgg_id is not None:
-                previous_detail_hash = await hash_cache.get_detail_hash(bgg_id)
-                if previous_detail_hash == payload_hash:
-                    await hash_cache.set_collection_hash(bgg_id, collection_hash)
-                    log_info(
-                        f"🔁 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — detail hash {payload_hash[:8]} nie zmieniony, pomijam zapisy"
-                    )
-                    detail_hash_skips += 1
-                    skip_write = True
-                else:
-                    await hash_cache.set_detail_hash(bgg_id, payload_hash)
-                    await hash_cache.set_collection_hash(bgg_id, collection_hash)
-                    detail_hash_updates += 1
-                    log_info(
-                        f"💾 {full_data.get('title') or full_data.get('name')} (ID={bgg_id}) — zapisuję nowe hashy (collection {collection_hash[:8]}, detail {payload_hash[:8]})"
-                    )
-
-            if not skip_write:
-                games_data.append(full_data)
-
+        ctx.set_stage("db_sync", total=len(games_data), unit="games", index=4, count=STAGE_COUNT)
         inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_games(
             games_data, collection_ids
         )
+        ctx.set_progress(len(games_data))
 
-    total_hash_skips = hash_skips + detail_hash_skips
     ctx.set_counters(
         # Rozmiar katalogu — bez niego podsumowanie dnia bez zmian nie miało
         # czego pokazać i kończyło się samym nagłówkiem „Stats".
@@ -572,14 +646,14 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
         inserted=inserted,
         updated=updated,
         removed=deleted,
-        skipped=total_hash_skips,
+        skipped=len(basics) - inserted - updated,
     )
-    summary = (
-        f"{ANSI_GREEN}🎉 Kolekcja BGG zsynchronizowana{ANSI_RESET} "
+    elapsed = (datetime.utcnow() - start_time).total_seconds()
+    log_success(
+        f"{ANSI_GREEN}🎉 Kolekcja BGG zsynchronizowana w {elapsed:.0f} s{ANSI_RESET} "
         f"(inserted={inserted}, updated={updated}, removed={deleted}) | "
-        f"{ANSI_YELLOW}🧾 hash skips={total_hash_skips}, detail hash updates={detail_hash_updates}{ANSI_RESET}"
+        f"{ANSI_YELLOW}szczegóły={len(details)}/{len(details_ids)}, prywatne={len(private)}/{len(private_ids)}{ANSI_RESET}"
     )
-    log_success(summary)
 
     end_time = datetime.utcnow()
     stats = {
@@ -587,12 +661,12 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
         "Added": inserted,
         "Updated": updated,
         "Removed": deleted,
-        "Hash skips": total_hash_skips,
-        "Detail hash updates": detail_hash_updates,
+        "Details fetched": len(details),
+        "Private data fetched": len(private),
     }
-    details = {
+    details_summary = {
         "Added games": inserted_titles,
         "Updated games": updated_titles,
         "Removed games": deleted_titles,
     }
-    await send_scrape_message("BGG collection sync", "✅ SUCCESS", start_time, end_time, stats, details)
+    await send_scrape_message("BGG collection sync", "✅ SUCCESS", start_time, end_time, stats, details_summary)

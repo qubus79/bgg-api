@@ -45,6 +45,7 @@ STAGE_LABELS: dict[str, str] = {
     "fetch_catalogue": "Fetching catalogue",
     "fetch_details": "Fetching game details",
     "fetch_remote": "Fetching remote data",
+    "fetch_private": "Fetching private data",
     "db_sync": "Writing to database",
     "finalizing": "Finalizing",
     "done": "Done",

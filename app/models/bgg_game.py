@@ -49,6 +49,11 @@ class BGGGame(Base):
     version_name = Column(String, nullable=True)
     version_languages = Column(String, nullable=True)
 
+    # `lastmodified` pozycji w kolekcji BGG — zmiana = trzeba odświeżyć dane
+    # prywatne. `details_fetched_at` — kiedy pobrano szczegóły z `thing`.
+    last_modified = Column(String, nullable=True)
+    details_fetched_at = Column(DateTime(timezone=False), nullable=True)
+
     created_at = Column(DateTime(timezone=False), server_default=func.now())
 
     # --- Private purchase / acquisition data (from BGG private collection API) ---
