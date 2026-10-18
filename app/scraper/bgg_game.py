@@ -316,48 +316,44 @@ def normalize_purchase_currency(pp_currency: Optional[str], private_comment: Opt
     return "PLN", "default_pln"
 
 
-async def fetch_private_collection_item(
+async def fetch_private_collection_entry(
     client: httpx.AsyncClient,
     auth: BGGAuthSessionManager,
     bgg_id: int,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch private collection JSON for a single game.
+    """Wpis gry z prywatnego API kolekcji (to samo, którego używa strona BGG
+    i edytor w aplikacji) — zawsze aktualny, także tuż po zmianie.
 
-    Requires a valid logged-in BGG session (cookies). Uses a single automatic re-login on 401/403.
+    Zwraca słownik wpisu, `{}` — gry nie ma w kolekcji, `None` — nie da się
+    sprawdzić (błąd sieci, logowania, odpowiedzi). Jedno ponowne logowanie
+    przy 401/403.
     """
-
     url = f"{BGG_PRIVATE_BASE}/api/collections?objectid={bgg_id}&objecttype=thing&userid={BGG_PRIVATE_USER_ID}"
-
-    # Ensure cookies are present on this client
-    await auth.ensure_session(client)
-
-    resp = await client.get(url)
-
-    # If auth expired, retry once after re-login
-    if resp.status_code in (401, 403):
-        log_info(f"🔐 Private collections returned {resp.status_code} for {bgg_id} — re-login and retry once")
-        await auth.invalidate()
+    try:
         await auth.ensure_session(client)
         resp = await client.get(url)
-
-    if resp.status_code != 200:
-        log_info(f"⚠️ Private collections HTTP {resp.status_code} for {bgg_id} — skipping private fields")
-        return None
-
-    try:
+        if resp.status_code in (401, 403):
+            log_info(f"🔐 Private collections returned {resp.status_code} for {bgg_id} — re-login and retry once")
+            await auth.invalidate()
+            await auth.ensure_session(client)
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            log_info(f"⚠️ Private collections HTTP {resp.status_code} for {bgg_id}")
+            return None
         payload = resp.json()
     except Exception as e:
-        log_info(f"⚠️ Private collections JSON parse error for {bgg_id}: {e}")
+        log_info(f"⚠️ Private collections error for {bgg_id}: {e}")
         return None
 
     items = payload.get("items") if isinstance(payload, dict) else None
-    if not items or not isinstance(items, list):
+    if not isinstance(items, list):
         return None
+    item = items[0] if items else {}
+    return item if isinstance(item, dict) else None
 
-    item = items[0] if items else None
-    if not isinstance(item, dict):
-        return None
 
+def private_purchase_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Dane zakupu z prywatnego wpisu (cena, waluta, ilość, skąd, kiedy, komentarz)."""
     pp_currency = item.get("pp_currency")
     pricepaid = item.get("pricepaid")
     quantity = item.get("quantity")
@@ -396,34 +392,39 @@ async def fetch_private_collection_item(
     }
 
 
-async def is_in_private_collection(
+_PRIVATE_STATUS_FIELDS = {
+    "own": "status_owned",
+    "preordered": "status_preordered",
+    "wishlist": "status_wishlist",
+    "fortrade": "status_fortrade",
+    "prevowned": "status_prevowned",
+    "wanttoplay": "status_wanttoplay",
+    "wanttobuy": "status_wanttobuy",
+}
+
+
+def private_status_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Statusy i priorytet listy życzeń z prywatnego wpisu — świeższe niż
+    publiczne XML kolekcji, które po zmianie potrafi chwilę pokazywać stan
+    sprzed niej."""
+    status = item.get("status") if isinstance(item.get("status"), dict) else {}
+    fields: Dict[str, Any] = {
+        column: bool(to_bool(status.get(key))) for key, column in _PRIVATE_STATUS_FIELDS.items()
+    }
+    fields["status_wishlist_priority"] = to_int(item.get("wishlistpriority"))
+    return fields
+
+
+async def fetch_private_collection_item(
     client: httpx.AsyncClient,
     auth: BGGAuthSessionManager,
     bgg_id: int,
-) -> Optional[bool]:
-    """Czy gra jest w kolekcji — wg prywatnego API (wpis z `collid`).
-
-    `None`, gdy nie da się tego sprawdzić (błąd sieci, logowania) — wtedy
-    niczego nie usuwamy.
-    """
-    url = f"{BGG_PRIVATE_BASE}/api/collections?objectid={bgg_id}&objecttype=thing&userid={BGG_PRIVATE_USER_ID}"
-    try:
-        await auth.ensure_session(client)
-        resp = await client.get(url)
-        if resp.status_code in (401, 403):
-            await auth.invalidate()
-            await auth.ensure_session(client)
-            resp = await client.get(url)
-        if resp.status_code != 200:
-            return None
-        payload = resp.json()
-    except Exception as e:
-        log_info(f"⚠️ Nie sprawdzę, czy {bgg_id} jest w kolekcji: {e}")
+) -> Optional[Dict[str, Any]]:
+    """Dane zakupu jednej gry (pełny sync kolekcji); `None` — brak danych."""
+    item = await fetch_private_collection_entry(client, auth, bgg_id)
+    if not item:
         return None
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        return None
-    return len(items) > 0
+    return private_purchase_fields(item)
 
 
 # =============================================================================
@@ -719,15 +720,62 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
 SYNC_ITEMS_MAX = int(os.getenv("BGG_SYNC_ITEMS_MAX", "60"))
 
 
+def basics_from_thing(item: ET.Element) -> Dict[str, Any]:
+    """Dane gry z `thing` — dla gry, którą prywatne API już ma w kolekcji,
+    a publiczne XML kolekcji jeszcze nie (np. tuż po dodaniu z aplikacji)."""
+    name = None
+    for name_el in item.findall("name"):
+        if name_el.attrib.get("type") == "primary":
+            name = name_el.attrib.get("value")
+            break
+    rank = None
+    for rank_el in item.findall("statistics/ratings/ranks/rank"):
+        if rank_el.attrib.get("name") in ("boardgame", "boardgameexpansion") or rank is None:
+            rank = to_int(_element_value(rank_el))
+    return {
+        "title": name,
+        "year_published": to_int(_element_value(item.find("yearpublished"))),
+        "image": item.findtext("image"),
+        "thumbnail": item.findtext("thumbnail"),
+        "average_rating": to_float(_element_value(item.find("statistics/ratings/average"))),
+        "bgg_rank": rank,
+    }
+
+
+def version_from_thing(item: ET.Element, version_id: Optional[int]) -> Dict[str, Any]:
+    """Nazwa i języki wydania o danym id spośród `thing&versions=1`."""
+    if not version_id:
+        return {"version_name": None, "version_languages": None}
+    for version in item.findall("versions/item"):
+        if version.attrib.get("id") != str(version_id):
+            continue
+        name = None
+        for name_el in version.findall("name"):
+            if name_el.attrib.get("type") == "primary":
+                name = name_el.attrib.get("value")
+                break
+        languages = [
+            link.attrib.get("value")
+            for link in version.findall("link")
+            if link.attrib.get("type") == "language" and link.attrib.get("value")
+        ]
+        return {"version_name": name or None, "version_languages": ", ".join(languages) or None}
+    return {}
+
+
 async def sync_collection_items(username: str, ids: List[int]) -> Dict[str, Any]:
     """Synchronizuje z BGG tylko wybrane gry — wołane przez aplikację, gdy
-    w kolekcji BGG widzi zmianę, której baza jeszcze nie ma (nowa gra,
-    zmieniony status, gra usunięta z kolekcji, zapis z edytora w aplikacji).
+    w kolekcji BGG widzi zmianę, której baza jeszcze nie ma, i po każdym
+    zapisie z edytora kolekcji w aplikacji.
 
-    Te same kroki co pełna synchronizacja, ale dla podanych id: pozycje
-    z kolekcji (`collection&id=…`), szczegóły (`thing`) i dane prywatne
-    zawsze świeże. Gry, których w kolekcji BGG już nie ma, usuwamy z bazy.
-    Zwraca zapisane gry (jak `/bgg_collection`) i id usuniętych.
+    Źródła, od najświeższego:
+    - prywatne API kolekcji — czy gra jest w kolekcji, statusy, priorytet,
+      wybrane wydanie i dane zakupu (aktualne tuż po zapisie),
+    - `thing&versions=1` — szczegóły gry i nazwa / języki wydania,
+    - publiczne XML kolekcji (`collection&id=…`) — ocena, ranking, partie.
+
+    Grę usuwamy z bazy tylko, gdy prywatne API potwierdzi, że jej nie ma
+    w kolekcji. Zwraca zapisane gry (jak `/bgg_collection`) i id usuniętych.
     """
     wanted = sorted({int(i) for i in ids if int(i) > 0})[:SYNC_ITEMS_MAX]
     if not wanted:
@@ -742,50 +790,62 @@ async def sync_collection_items(username: str, ids: List[int]) -> Dict[str, Any]
 
         collection_root = await fetch_xml(client, collection_url)
         # Tylko prawdziwa lista kolekcji — przy błędzie BGG (`<errors>`)
-        # brak gry nie znaczy, że usunięto ją z kolekcji.
+        # niczego nie zapisujemy ani nie usuwamy.
         if collection_root.tag != "items":
             raise RuntimeError(f"BGG nie oddał kolekcji (<{collection_root.tag}>) — spróbuj później.")
-        collection_data = parse_collection_data(collection_root)
         basics = {
-            bgg_id: extract_collection_basics(item)
-            for bgg_id, item in collection_data.items()
+            int(bgg_id): extract_collection_basics(item)
+            for bgg_id, item in parse_collection_data(collection_root).items()
             if bgg_id is not None
         }
-        present = {int(bgg_id) for bgg_id in basics}
-        # Brak w odpowiedzi `collection` to jeszcze nie usunięcie — usuwamy
-        # tylko to, czego nie ma też w prywatnym API kolekcji.
-        removed = set()
-        for bgg_id in sorted(set(wanted) - present):
-            if await is_in_private_collection(client, auth, bgg_id) is False:
-                removed.add(bgg_id)
-            else:
-                log_info(f"🛡️ {bgg_id}: brak w `collection`, ale nie potwierdzony — zostaje w bazie")
 
-        details: Dict[str, Dict[str, Any]] = {}
-        batches = chunks(list(basics.keys()))
+        # Prywatny wpis każdej gry: {} — nie ma jej w kolekcji, None — nie wiadomo.
+        entries: Dict[int, Optional[Dict[str, Any]]] = {}
+        for number, bgg_id in enumerate(wanted, start=1):
+            entries[bgg_id] = await fetch_private_collection_entry(client, auth, bgg_id)
+            if number < len(wanted):
+                await asyncio.sleep(PRIVATE_PAUSE_SECONDS)
+
+        in_collection = [
+            bgg_id for bgg_id in wanted
+            if entries[bgg_id] or (entries[bgg_id] is None and bgg_id in basics)
+        ]
+        removed = {bgg_id for bgg_id in wanted if entries[bgg_id] == {}}
+        for bgg_id in wanted:
+            if bgg_id not in removed and bgg_id not in in_collection:
+                log_info(f"🛡️ {bgg_id}: nie wiadomo, czy jest w kolekcji — bez zmian w bazie")
+
+        things: Dict[int, ET.Element] = {}
+        batches = chunks([str(i) for i in in_collection])
         for number, batch in enumerate(batches, start=1):
-            root = await fetch_xml(client, THING_BATCH_URL_TMPL.format(ids=",".join(batch)))
-            details.update(parse_thing_batch(root))
+            root = await fetch_xml(client, f"{BGG_XML_BASE}/thing?id={','.join(batch)}&stats=1&versions=1")
+            for item in root.findall("item"):
+                if item.attrib.get("id"):
+                    things[int(item.attrib["id"])] = item
             if number < len(batches):
                 await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
 
-        private: Dict[str, Dict[str, Any]] = {}
-        for number, bgg_id in enumerate(basics.keys(), start=1):
-            data = await fetch_private_collection_item(client, auth, int(bgg_id))
-            if data:
-                private[bgg_id] = data
-            if number < len(basics):
-                await asyncio.sleep(PRIVATE_PAUSE_SECONDS)
-
     now = datetime.utcnow()
     games_data: List[Dict[str, Any]] = []
-    for bgg_id, basic in basics.items():
-        data: Dict[str, Any] = {"bgg_id": int(bgg_id), **basic}
-        if bgg_id in details:
-            data.update(details[bgg_id])
+    for bgg_id in in_collection:
+        thing = things.get(bgg_id)
+        entry = entries.get(bgg_id) or {}
+        data: Dict[str, Any] = {"bgg_id": bgg_id}
+        if bgg_id in basics:
+            data.update(basics[bgg_id])
+        elif thing is not None:
+            data.update(basics_from_thing(thing))
+        else:
+            log_info(f"⚠️ {bgg_id}: brak danych gry z BGG — pomijam")
+            continue
+        if thing is not None:
+            data.update(extract_details(thing))
             data["details_fetched_at"] = now
-        if bgg_id in private:
-            data.update(private[bgg_id])
+        if entry:
+            data.update(private_status_fields(entry))
+            data.update(private_purchase_fields(entry))
+            if thing is not None:
+                data.update(version_from_thing(thing, to_int(entry.get("versionid"))))
         games_data.append(data)
 
     inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_games(
@@ -796,7 +856,10 @@ async def sync_collection_items(username: str, ids: List[int]) -> Dict[str, Any]
         + (f" — {', '.join(inserted_titles + updated_titles + deleted_titles)}" if inserted + updated + deleted else "")
     )
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(BGGGame).where(BGGGame.bgg_id.in_(present)))
-        games = [row.__dict__ for row in result.scalars().all()] if present else []
+    saved = {data["bgg_id"] for data in games_data}
+    games: List[Dict[str, Any]] = []
+    if saved:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(BGGGame).where(BGGGame.bgg_id.in_(saved)))
+            games = [row.__dict__ for row in result.scalars().all()]
     return {"games": games, "removed": sorted(removed)}
