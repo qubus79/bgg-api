@@ -473,11 +473,15 @@ def _changed_fields(model: Any, data: Dict[str, Any]) -> List[str]:
 
 async def _persist_games(
     games_data: List[Dict[str, Any]],
-    collection_ids: set[int],
+    collection_ids: Optional[set[int]] = None,
+    delete_ids: Optional[set[int]] = None,
 ) -> tuple[int, int, int, List[str], List[str], List[str]]:
     """Zapis do bazy. „Zaktualizowana" liczy się tylko, gdy coś się zmieniło —
     sync przepisuje dane z kolekcji wszystkim grom, ale większość zostaje
-    bez zmian."""
+    bez zmian.
+
+    Usuwamy: przy pełnej kolekcji (`collection_ids`) gry, których w niej nie
+    ma; przy synchronizacji wybranych gier — dokładnie `delete_ids`."""
 
     inserted = 0
     updated = 0
@@ -515,9 +519,13 @@ async def _persist_games(
                 inserted += 1
                 inserted_titles.append(title)
 
-        result = await session.execute(select(BGGGame.bgg_id))
-        all_db_ids = set(result.scalars().all())
-        to_delete = all_db_ids - collection_ids
+        if delete_ids is not None:
+            to_delete = set(delete_ids)
+        elif collection_ids is not None:
+            result = await session.execute(select(BGGGame.bgg_id))
+            to_delete = set(result.scalars().all()) - collection_ids
+        else:
+            to_delete = set()
         if to_delete:
             result = await session.execute(select(BGGGame.bgg_id, BGGGame.title).where(BGGGame.bgg_id.in_(to_delete)))
             rows = result.all()
@@ -670,3 +678,88 @@ async def fetch_bgg_collection(username: str, ctx=None) -> None:
         "Removed games": deleted_titles,
     }
     await send_scrape_message("BGG collection sync", "✅ SUCCESS", start_time, end_time, stats, details_summary)
+
+
+# =============================================================================
+# SYNCHRONIZACJA WYBRANYCH GIER (z aplikacji)
+# =============================================================================
+
+# Tyle gier naraz — jedno zapytanie `collection` z filtrem `id` i do trzech
+# paczek `thing`.
+SYNC_ITEMS_MAX = int(os.getenv("BGG_SYNC_ITEMS_MAX", "60"))
+
+
+async def sync_collection_items(username: str, ids: List[int]) -> Dict[str, Any]:
+    """Synchronizuje z BGG tylko wybrane gry — wołane przez aplikację, gdy
+    w kolekcji BGG widzi zmianę, której baza jeszcze nie ma (nowa gra,
+    zmieniony status, gra usunięta z kolekcji, zapis z edytora w aplikacji).
+
+    Te same kroki co pełna synchronizacja, ale dla podanych id: pozycje
+    z kolekcji (`collection&id=…`), szczegóły (`thing`) i dane prywatne
+    zawsze świeże. Gry, których w kolekcji BGG już nie ma, usuwamy z bazy.
+    Zwraca zapisane gry (jak `/bgg_collection`) i id usuniętych.
+    """
+    wanted = sorted({int(i) for i in ids if int(i) > 0})[:SYNC_ITEMS_MAX]
+    if not wanted:
+        return {"games": [], "removed": []}
+
+    id_list = ",".join(str(i) for i in wanted)
+    collection_url = f"{BGG_XML_BASE}/collection?username={username}&id={id_list}&stats=1&version=1"
+    log_info(f"🎯 Synchronizacja wybranych gier: {id_list}")
+
+    async with _make_client() as client:
+        auth = BGGAuthSessionManager()
+
+        collection_root = await fetch_xml(client, collection_url)
+        # Tylko prawdziwa lista kolekcji — przy błędzie BGG (`<errors>`)
+        # brak gry nie znaczy, że usunięto ją z kolekcji.
+        if collection_root.tag != "items":
+            raise RuntimeError(f"BGG nie oddał kolekcji (<{collection_root.tag}>) — spróbuj później.")
+        collection_data = parse_collection_data(collection_root)
+        basics = {
+            bgg_id: extract_collection_basics(item)
+            for bgg_id, item in collection_data.items()
+            if bgg_id is not None
+        }
+        present = {int(bgg_id) for bgg_id in basics}
+        removed = set(wanted) - present
+
+        details: Dict[str, Dict[str, Any]] = {}
+        batches = chunks(list(basics.keys()))
+        for number, batch in enumerate(batches, start=1):
+            root = await fetch_xml(client, THING_BATCH_URL_TMPL.format(ids=",".join(batch)))
+            details.update(parse_thing_batch(root))
+            if number < len(batches):
+                await asyncio.sleep(THING_REQUEST_PAUSE_SECONDS)
+
+        private: Dict[str, Dict[str, Any]] = {}
+        for number, bgg_id in enumerate(basics.keys(), start=1):
+            data = await fetch_private_collection_item(client, auth, int(bgg_id))
+            if data:
+                private[bgg_id] = data
+            if number < len(basics):
+                await asyncio.sleep(PRIVATE_PAUSE_SECONDS)
+
+    now = datetime.utcnow()
+    games_data: List[Dict[str, Any]] = []
+    for bgg_id, basic in basics.items():
+        data: Dict[str, Any] = {"bgg_id": int(bgg_id), **basic}
+        if bgg_id in details:
+            data.update(details[bgg_id])
+            data["details_fetched_at"] = now
+        if bgg_id in private:
+            data.update(private[bgg_id])
+        games_data.append(data)
+
+    inserted, updated, deleted, inserted_titles, updated_titles, deleted_titles = await _persist_games(
+        games_data, delete_ids=removed
+    )
+    log_success(
+        f"🎯 Wybrane gry zsynchronizowane: dodane {inserted}, zmienione {updated}, usunięte {deleted}"
+        + (f" — {', '.join(inserted_titles + updated_titles + deleted_titles)}" if inserted + updated + deleted else "")
+    )
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(BGGGame).where(BGGGame.bgg_id.in_(present)))
+        games = [row.__dict__ for row in result.scalars().all()] if present else []
+    return {"games": games, "removed": sorted(removed)}

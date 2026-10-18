@@ -4,7 +4,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app import jobs
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
-from app.scraper.bgg_game import fetch_bgg_collection
+from app.scraper.bgg_game import fetch_bgg_collection, sync_collection_items
 from app.utils.logging import log_info, log_success
 from app.database import engine
 from app.models.bgg_game import Base
@@ -63,6 +63,11 @@ async def update_bgg_collection(ctx=jobs.NULL_CTX) -> dict:
 
     log_success("🎉 Kolekcja BGG została zsynchronizowana z bazą danych")
     return {"status": "done"}
+
+
+async def sync_items(ids: list[int]) -> dict:
+    """Wybrane gry prosto z BGG do bazy (endpoint `/sync_items`)."""
+    return await sync_collection_items(USERNAME, ids)
 
 
 async def get_bgg_collection() -> list:

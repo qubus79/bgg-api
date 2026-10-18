@@ -1,6 +1,7 @@
 # app/routes/bgg_game.py
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 from app import jobs
 from app.tasks import bgg_game
 
@@ -21,6 +22,16 @@ async def update_bgg():
 @router.get("/bgg_collection")
 async def get_bgg():
     return await bgg_game.get_bgg_collection()
+
+class SyncItemsRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/sync_items")
+async def sync_items(request: SyncItemsRequest):
+    """Synchronizacja wybranych gier z BGG — od razu, bez czekania na pełny
+    sync kolekcji. Zwraca zapisane gry i id usuniętych z kolekcji."""
+    return await bgg_game.sync_items(request.ids)
 
 @router.get("/purchases")
 async def get_purchases(
