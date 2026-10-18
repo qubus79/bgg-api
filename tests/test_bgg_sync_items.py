@@ -35,7 +35,8 @@ class _Session:
         return _Result()
 
 
-def _run(monkeypatch, collection_xml):
+def _run(monkeypatch, collection_xml, in_collection=None):
+    in_collection = in_collection if in_collection is not None else {20: False}
     persisted = {}
 
     async def fake_fetch_xml(client, url, on_wait=None):
@@ -51,6 +52,10 @@ def _run(monkeypatch, collection_xml):
 
     monkeypatch.setattr(scraper, "fetch_xml", fake_fetch_xml)
     monkeypatch.setattr(scraper, "fetch_private_collection_item", fake_private)
+    async def fake_in_collection(client, auth, bgg_id):
+        return in_collection.get(bgg_id)
+
+    monkeypatch.setattr(scraper, "is_in_private_collection", fake_in_collection)
     monkeypatch.setattr(scraper, "_persist_games", fake_persist)
     monkeypatch.setattr(scraper, "AsyncSessionLocal", _Session)
     monkeypatch.setattr(scraper, "PRIVATE_PAUSE_SECONDS", 0)
@@ -69,3 +74,9 @@ def test_present_game_is_saved_and_missing_one_removed(monkeypatch):
 def test_bgg_error_never_deletes(monkeypatch):
     with pytest.raises(RuntimeError):
         _run(monkeypatch, "<errors><error><message>Invalid username</message></error></errors>")
+
+
+def test_missing_but_unconfirmed_game_is_kept(monkeypatch):
+    result, persisted = _run(monkeypatch, COLLECTION, in_collection={20: None})
+    assert persisted["delete"] == set()
+    assert result["removed"] == []

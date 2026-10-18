@@ -396,6 +396,36 @@ async def fetch_private_collection_item(
     }
 
 
+async def is_in_private_collection(
+    client: httpx.AsyncClient,
+    auth: BGGAuthSessionManager,
+    bgg_id: int,
+) -> Optional[bool]:
+    """Czy gra jest w kolekcji — wg prywatnego API (wpis z `collid`).
+
+    `None`, gdy nie da się tego sprawdzić (błąd sieci, logowania) — wtedy
+    niczego nie usuwamy.
+    """
+    url = f"{BGG_PRIVATE_BASE}/api/collections?objectid={bgg_id}&objecttype=thing&userid={BGG_PRIVATE_USER_ID}"
+    try:
+        await auth.ensure_session(client)
+        resp = await client.get(url)
+        if resp.status_code in (401, 403):
+            await auth.invalidate()
+            await auth.ensure_session(client)
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+    except Exception as e:
+        log_info(f"⚠️ Nie sprawdzę, czy {bgg_id} jest w kolekcji: {e}")
+        return None
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return None
+    return len(items) > 0
+
+
 # =============================================================================
 # CO POBRAĆ: TYLKO NOWE, ZMIENIONE I PRZETERMINOWANE
 # =============================================================================
@@ -722,7 +752,14 @@ async def sync_collection_items(username: str, ids: List[int]) -> Dict[str, Any]
             if bgg_id is not None
         }
         present = {int(bgg_id) for bgg_id in basics}
-        removed = set(wanted) - present
+        # Brak w odpowiedzi `collection` to jeszcze nie usunięcie — usuwamy
+        # tylko to, czego nie ma też w prywatnym API kolekcji.
+        removed = set()
+        for bgg_id in sorted(set(wanted) - present):
+            if await is_in_private_collection(client, auth, bgg_id) is False:
+                removed.add(bgg_id)
+            else:
+                log_info(f"🛡️ {bgg_id}: brak w `collection`, ale nie potwierdzony — zostaje w bazie")
 
         details: Dict[str, Dict[str, Any]] = {}
         batches = chunks(list(basics.keys()))
