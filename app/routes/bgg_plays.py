@@ -33,9 +33,13 @@ async def list_bgg_plays(
 
 
 @router.get("/stats")
-async def plays_stats():
-    """Basic stats for stored plays."""
-    return await bgg_plays.get_plays_stats()
+async def plays_stats(
+    since: str | None = Query(
+        None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Only plays on or after this date (YYYY-MM-DD)"
+    ),
+):
+    """Basic stats for stored plays; `since` narrows them to a date range."""
+    return await bgg_plays.get_plays_stats(since)
 
 
 @router.get("/stats/games")

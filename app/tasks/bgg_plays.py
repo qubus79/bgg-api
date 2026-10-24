@@ -49,20 +49,32 @@ async def setup_plays_scheduler():
 #
 # `LEFT JOIN` jest bezpieczny: `bgg_collection.bgg_id` ma UNIQUE, więc żadna
 # rozgrywka nie policzy się dwa razy.
+#
+# `since` (RRRR-MM-DD) zawęża do partii od tego dnia — Summary w aplikacji
+# pokazuje „ten rok" / „ostatnie 12 miesięcy". `play_date` to tekst w tym
+# formacie, więc porównanie tekstowe jest porównaniem dat; partie bez daty
+# wypadają z zakresu, ale zostają w „all time".
 _BREAKDOWN_SQL = """
 SELECT count(*)                                                        AS total,
+       count(DISTINCT p.object_id)                                     AS games,
        count(*) FILTER (WHERE coalesce(c.status_owned, false))         AS owned,
        count(*) FILTER (WHERE c.bgg_id IS NULL)                        AS outside_collection,
        count(*) FILTER (WHERE c.bgg_id IS NOT NULL
                           AND NOT coalesce(c.status_owned, false))     AS in_collection_not_owned
 FROM bgg_plays p
 LEFT JOIN bgg_collection c ON c.bgg_id = p.object_id
+WHERE (CAST(:since AS text) IS NULL OR p.play_date >= CAST(:since AS text))
 """
 
 
-async def get_plays_stats():
+async def get_plays_stats(since: str | None = None):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(text("SELECT COUNT(*) FROM bgg_plays"))
+        if since:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM bgg_plays WHERE play_date >= :since"), {"since": since}
+            )
+        else:
+            result = await session.execute(text("SELECT COUNT(*) FROM bgg_plays"))
         count = result.scalar()
 
         result2 = await session.execute(text("SELECT MAX(updated_at) FROM bgg_plays"))
@@ -72,14 +84,17 @@ async def get_plays_stats():
             "count": int(count or 0),
             "last_update": str(last_update) if last_update else "n/a",
         }
+        if since:
+            stats["since"] = since
 
         try:
-            row = (await session.execute(text(_BREAKDOWN_SQL))).mappings().first()
+            row = (await session.execute(text(_BREAKDOWN_SQL), {"since": since})).mappings().first()
         except Exception as exc:  # noqa: BLE001 — rozbicie to dodatek, nie może wywrócić statusu
             log_info(f"⚠️ Nie udało się policzyć rozbicia rozgrywek: {exc}")
             return stats
 
         if row:
+            stats["games"] = int(row["games"] or 0)
             stats["owned"] = int(row["owned"] or 0)
             stats["outside_collection"] = int(row["outside_collection"] or 0)
             stats["in_collection_not_owned"] = int(row["in_collection_not_owned"] or 0)
