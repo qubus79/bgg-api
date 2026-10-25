@@ -541,14 +541,14 @@ async def _persist_games(
                     continue
                 apply_model_fields(model, data)
                 # Data zmiany dla telefonu pobierającego same zmiany (`app/changes.py`).
-                model.changed_at = changes_api.utcnow()
+                model.changed_at = changes_api.db_now()
                 # Sama data zmiany i data pobrania szczegółów to nie zmiana gry.
                 if set(changed) - {"last_modified", "details_fetched_at"}:
                     log_info(f"♻️ {title}: {', '.join(sorted(changed))}")
                     updated += 1
                     updated_titles.append(title)
             else:
-                session.add(BGGGame(**data, changed_at=changes_api.utcnow()))
+                session.add(BGGGame(**data, changed_at=changes_api.db_now()))
                 await changes_api.forget_removed(session, "game", [bgg_id])
                 log_info(f"➕ Dodano nową grę: {title}")
                 inserted += 1

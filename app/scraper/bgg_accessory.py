@@ -294,14 +294,14 @@ async def _persist_accessories(
             if model:
                 apply_model_fields(model, data)
                 # Data zmiany dla telefonu pobierającego same zmiany (`app/changes.py`).
-                model.changed_at = changes_api.utcnow()
+                model.changed_at = changes_api.db_now()
                 log_info(f"♻️ Zaktualizowano dane akcesorium: {title}")
                 updated += 1
                 updated_titles.append(title)
                 if hash_cache and payload_hash:
                     await hash_cache.set_hash("accessory", bgg_id, payload_hash)
             else:
-                session.add(BGGAccessory(**data, changed_at=changes_api.utcnow()))
+                session.add(BGGAccessory(**data, changed_at=changes_api.db_now()))
                 await changes_api.forget_removed(session, "accessory", [bgg_id])
                 log_info(f"➕ Dodano nowe akcesorium: {title}")
                 inserted += 1

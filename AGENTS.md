@@ -179,6 +179,9 @@ Notes for agents
 - `GET /bgg_games/bgg_collection/changes` and `GET /bgg_accessories/changes` return rows changed
   after `since` (the server's `cursor` from the previous answer, minus a 5 min overlap),
   `removed` (bgg_ids) and `total` for the app's count check (`app/changes.py`).
+- Nothing may slip through: `cursor` is the start of the oldest running transaction (not "now")
+  and change/removal times are database time (`changes_api.db_now()`), compared with `>=` —
+  a row written in a long transaction still comes with the next pull.
 - `changed_at` is set where the rows are written (`_persist_games`, `_persist_accessories`), only
   on a real change; deletions leave a tombstone in `removed_rows` (kept 60 days). A new write
   path must set `changed_at` and record removals the same way, or the app misses the change
