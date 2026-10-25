@@ -55,6 +55,8 @@ class BGGGame(Base):
     details_fetched_at = Column(DateTime(timezone=False), nullable=True)
 
     created_at = Column(DateTime(timezone=False), server_default=func.now())
+    # Kiedy dane gry ostatnio się zmieniły (`_persist_games`) — `/bgg_collection/changes`.
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     # --- Private purchase / acquisition data (from BGG private collection API) ---
     purchase_price_paid = Column(Float, nullable=True)

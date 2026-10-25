@@ -1,5 +1,7 @@
 # app/routes/bgg_game.py
 
+from datetime import datetime
+
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from app import jobs
@@ -22,6 +24,13 @@ async def update_bgg():
 @router.get("/bgg_collection")
 async def get_bgg():
     return await bgg_game.get_bgg_collection()
+
+
+@router.get("/bgg_collection/changes")
+async def get_bgg_changes(since: datetime):
+    """Same zmiany kolekcji od `since` (`cursor` z poprzedniej odpowiedzi):
+    `games`, `removed` (bgg_id usuniętych), `total`, `cursor`."""
+    return await bgg_game.get_bgg_collection_changes(since)
 
 class SyncItemsRequest(BaseModel):
     ids: list[int]

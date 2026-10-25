@@ -4,6 +4,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app import jobs
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
+from app.models.removed_row import RemovedRow  # noqa: F401 — tabela dla create_all
+from app import changes as changes_api
 from app.scraper.bgg_game import fetch_bgg_collection, sync_collection_items
 from app.utils.logging import log_info, log_success
 from app.database import engine
@@ -20,6 +22,10 @@ _ADD_COLUMNS_SQL = [
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS version_languages VARCHAR",
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS last_modified VARCHAR",
     "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS details_fetched_at TIMESTAMP",
+    # Daty zmian do `/…/changes`; istniejące wiersze dostają datę wdrożenia,
+    # więc pierwsze pobranie zmian po nim odda wszystko raz.
+    "ALTER TABLE bgg_collection ADD COLUMN IF NOT EXISTS changed_at TIMESTAMPTZ DEFAULT now()",
+    "ALTER TABLE bgg_accessories ADD COLUMN IF NOT EXISTS changed_at TIMESTAMPTZ DEFAULT now()",
 ]
 
 
@@ -68,6 +74,11 @@ async def update_bgg_collection(ctx=jobs.NULL_CTX) -> dict:
 async def sync_items(ids: list[int]) -> dict:
     """Wybrane gry prosto z BGG do bazy (endpoint `/sync_items`)."""
     return await sync_collection_items(USERNAME, ids)
+
+
+async def get_bgg_collection_changes(since) -> dict:
+    """Same zmiany kolekcji od `since` — patrz `app/changes.py`."""
+    return await changes_api.changes(BGGGame, "game", since, changes_api.row_dict, "games")
 
 
 async def get_bgg_collection() -> list:

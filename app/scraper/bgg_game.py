@@ -8,6 +8,7 @@ from typing import Callable, Dict, Any, Optional, List, Tuple, cast
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_game import BGGGame
+from app import changes as changes_api
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.convert import to_bool, to_float, to_int
@@ -539,13 +540,16 @@ async def _persist_games(
                 if not changed:
                     continue
                 apply_model_fields(model, data)
+                # Data zmiany dla telefonu pobierającego same zmiany (`app/changes.py`).
+                model.changed_at = changes_api.utcnow()
                 # Sama data zmiany i data pobrania szczegółów to nie zmiana gry.
                 if set(changed) - {"last_modified", "details_fetched_at"}:
                     log_info(f"♻️ {title}: {', '.join(sorted(changed))}")
                     updated += 1
                     updated_titles.append(title)
             else:
-                session.add(BGGGame(**data))
+                session.add(BGGGame(**data, changed_at=changes_api.utcnow()))
+                await changes_api.forget_removed(session, "game", [bgg_id])
                 log_info(f"➕ Dodano nową grę: {title}")
                 inserted += 1
                 inserted_titles.append(title)
@@ -562,6 +566,7 @@ async def _persist_games(
             rows = result.all()
             deleted_titles.extend([row[1] or f"BGG ID {row[0]}" for row in rows])
             await session.execute(delete(BGGGame).where(BGGGame.bgg_id.in_(to_delete)))
+            await changes_api.record_removed(session, "game", to_delete)
             deleted = len(to_delete)
 
         await session.commit()

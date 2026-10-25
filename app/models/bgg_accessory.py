@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Boolean, Float
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime
+from sqlalchemy.sql import func
 from app.database import Base
 
 class BGGAccessory(Base):
@@ -27,3 +28,5 @@ class BGGAccessory(Base):
     bgg_rank = Column(Integer, default=0)
 
     last_modified = Column(String)
+    # Kiedy dane akcesorium ostatnio się zmieniły — `/bgg_accessories/changes`.
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

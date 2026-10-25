@@ -1,5 +1,7 @@
 # app/routes/bgg_accessory.py
 
+from datetime import datetime
+
 from fastapi import APIRouter
 from app import jobs
 from app.tasks import bgg_accessory
@@ -21,3 +23,9 @@ async def update_bgg_accessories():
 @router.get("/")
 async def get_bgg_accessories():
     return await bgg_accessory.get_bgg_accessories()
+
+
+@router.get("/changes")
+async def get_bgg_accessories_changes(since: datetime):
+    """Same zmiany akcesoriów od `since` — `accessories`, `removed`, `total`, `cursor`."""
+    return await bgg_accessory.get_bgg_accessories_changes(since)

@@ -174,3 +174,12 @@ Notes for agents
 - Do not add new tooling without updating this file.
 - Keep changes focused; avoid refactors unless required.
 - Respect Railway deployment assumptions (env vars, Postgres on Railway).
+
+## Changes for the app (`/…/changes?since=`)
+- `GET /bgg_games/bgg_collection/changes` and `GET /bgg_accessories/changes` return rows changed
+  after `since` (the server's `cursor` from the previous answer, minus a 5 min overlap),
+  `removed` (bgg_ids) and `total` for the app's count check (`app/changes.py`).
+- `changed_at` is set where the rows are written (`_persist_games`, `_persist_accessories`), only
+  on a real change; deletions leave a tombstone in `removed_rows` (kept 60 days). A new write
+  path must set `changed_at` and record removals the same way, or the app misses the change
+  until its daily full pull.

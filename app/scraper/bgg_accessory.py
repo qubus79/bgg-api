@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, cast
 import asyncio
 from app.database import AsyncSessionLocal
 from app.models.bgg_accessory import BGGAccessory
+from app import changes as changes_api
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.bgg_hash_cache import BGGHashCache, build_hash_cache, compute_payload_hash
@@ -292,13 +293,16 @@ async def _persist_accessories(
 
             if model:
                 apply_model_fields(model, data)
+                # Data zmiany dla telefonu pobierającego same zmiany (`app/changes.py`).
+                model.changed_at = changes_api.utcnow()
                 log_info(f"♻️ Zaktualizowano dane akcesorium: {title}")
                 updated += 1
                 updated_titles.append(title)
                 if hash_cache and payload_hash:
                     await hash_cache.set_hash("accessory", bgg_id, payload_hash)
             else:
-                session.add(BGGAccessory(**data))
+                session.add(BGGAccessory(**data, changed_at=changes_api.utcnow()))
+                await changes_api.forget_removed(session, "accessory", [bgg_id])
                 log_info(f"➕ Dodano nowe akcesorium: {title}")
                 inserted += 1
                 inserted_titles.append(title)
@@ -312,6 +316,7 @@ async def _persist_accessories(
             result = await session.execute(select(BGGAccessory.bgg_id, BGGAccessory.name).where(BGGAccessory.bgg_id.in_(to_delete)))
             deleted_titles.extend([row[1] or f"BGG ID {row[0]}" for row in result.all()])
             await session.execute(delete(BGGAccessory).where(BGGAccessory.bgg_id.in_(to_delete)))
+            await changes_api.record_removed(session, "accessory", to_delete)
             deleted = len(to_delete)
             if hash_cache:
                 for removed_id in to_delete:

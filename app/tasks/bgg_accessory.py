@@ -4,6 +4,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app import jobs
 from app.database import AsyncSessionLocal, engine
 from app.models.bgg_accessory import BGGAccessory, Base
+from app.models.removed_row import RemovedRow  # noqa: F401 — tabela dla create_all
+from app import changes as changes_api
 from app.scraper.bgg_accessory import fetch_bgg_accessories
 from app.utils.logging import log_info, log_success
 
@@ -13,6 +15,9 @@ USERNAME = "qubus"
 async def init_bgg_accessory_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "ALTER TABLE bgg_accessories ADD COLUMN IF NOT EXISTS changed_at TIMESTAMPTZ DEFAULT now()"
+        ))
 
 
 async def setup_accessory_scheduler():
@@ -45,6 +50,11 @@ async def update_bgg_accessories(ctx=jobs.NULL_CTX) -> dict:
 
     log_success("🎉 Akcesoria BGG zostały zsynchronizowane z bazą danych")
     return {"status": "done"}
+
+
+async def get_bgg_accessories_changes(since) -> dict:
+    """Same zmiany akcesoriów od `since` — patrz `app/changes.py`."""
+    return await changes_api.changes(BGGAccessory, "accessory", since, changes_api.row_dict, "accessories")
 
 
 async def get_bgg_accessories() -> list:
